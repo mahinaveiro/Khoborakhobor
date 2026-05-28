@@ -222,15 +222,15 @@ object ReaderHtmlGenerator {
     private val LIGHT_READER_CSS = """
         :root{color-scheme:light}
         *{box-sizing:border-box}
-        html,body{margin:0;background:#FAF9F5;color:#111111}
+        html,body{margin:0;background:#F4EFE6;color:#17130D}
         body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Noto Sans Bengali","Noto Serif Bengali","SolaimanLipi",sans-serif;line-height:1.72}
-        .reader-shell{max-width:760px;margin:0 auto;min-height:100vh;padding:20px;background:#FFFFFF}
-        .reader-header{border-bottom:1px solid rgba(0,0,0,.12);margin-bottom:18px;padding-bottom:14px}
-        h1{font-size:1.85rem;line-height:1.28;margin:8px 0 14px;color:#111111}
-        h2,h3,h4,h5,h6{line-height:1.35;color:#111111}
+        .reader-shell{max-width:760px;margin:0 auto;min-height:100vh;padding:20px;background:#FFFDF8}
+        .reader-header{border-bottom:1px solid #DED6CA;margin-bottom:18px;padding-bottom:14px}
+        h1{font-size:1.85rem;line-height:1.28;margin:8px 0 14px;color:#17130D}
+        h2,h3,h4,h5,h6{line-height:1.35;color:#17130D}
         p,li{font-size:1.05rem}
-        .meta{color:#616161;font-size:.9rem;margin:4px 0;word-break:break-word}
-        a{color:#111111;text-decoration:underline;text-underline-offset:3px}
+        .meta{color:#6F675C;font-size:.9rem;margin:4px 0;word-break:break-word}
+        a{color:#17130D;text-decoration:underline;text-underline-offset:3px}
         img,picture,video{max-width:100%;height:auto}
         figure{margin:18px 0}
         figcaption{color:#616161;font-size:.9rem}
@@ -242,19 +242,19 @@ object ReaderHtmlGenerator {
     private val DARK_READER_CSS = """
         :root{color-scheme:dark}
         *{box-sizing:border-box}
-        html,body{margin:0;background:#0B0B0B;color:#F2F2F2}
+        html,body{margin:0;background:#080808;color:#F5F2EC}
         body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Noto Sans Bengali","Noto Serif Bengali","SolaimanLipi",sans-serif;line-height:1.72}
-        .reader-shell{max-width:760px;margin:0 auto;min-height:100vh;padding:20px;background:#111111}
-        .reader-header{border-bottom:1px solid rgba(255,255,255,.14);margin-bottom:18px;padding-bottom:14px}
-        h1{font-size:1.85rem;line-height:1.28;margin:8px 0 14px;color:#F2F2F2}
-        h2,h3,h4,h5,h6{line-height:1.35;color:#F2F2F2}
+        .reader-shell{max-width:760px;margin:0 auto;min-height:100vh;padding:20px;background:#151515}
+        .reader-header{border-bottom:1px solid #2A2A2A;margin-bottom:18px;padding-bottom:14px}
+        h1{font-size:1.85rem;line-height:1.28;margin:8px 0 14px;color:#F5F2EC}
+        h2,h3,h4,h5,h6{line-height:1.35;color:#F5F2EC}
         p,li{font-size:1.05rem}
-        .meta{color:#B8B8B8;font-size:.9rem;margin:4px 0;word-break:break-word}
-        a{color:#F5F5F5;text-decoration:underline;text-underline-offset:3px}
+        .meta{color:#A8A29A;font-size:.9rem;margin:4px 0;word-break:break-word}
+        a{color:#F5F2EC;text-decoration:underline;text-underline-offset:3px}
         img,picture,video{max-width:100%;height:auto}
         figure{margin:18px 0}
-        figcaption{color:#B8B8B8;font-size:.9rem}
-        blockquote{border-left:3px solid rgba(255,255,255,.22);margin:18px 0;padding-left:14px;color:#F2F2F2}
+        figcaption{color:#A8A29A;font-size:.9rem}
+        blockquote{border-left:3px solid rgba(255,255,255,.22);margin:18px 0;padding-left:14px;color:#F5F2EC}
         table{max-width:100%;border-collapse:collapse;display:block;overflow-x:auto}
         td,th{border:1px solid rgba(255,255,255,.14);padding:8px}
     """.trimIndent()

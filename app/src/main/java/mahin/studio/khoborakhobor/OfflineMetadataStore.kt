@@ -25,6 +25,14 @@ class OfflineMetadataStore(
                     ?.takeIf { it != JSONObject.NULL }
                     ?.toString()
                     ?.ifBlank { null }
+                val archiveHtmlPath = item.opt("archiveHtmlPath")
+                    ?.takeIf { it != JSONObject.NULL }
+                    ?.toString()
+                    ?.ifBlank { null }
+                val archiveDirPath = item.opt("archiveDirPath")
+                    ?.takeIf { it != JSONObject.NULL }
+                    ?.toString()
+                    ?.ifBlank { null }
                 val page = OfflinePage(
                     id = item.getString("id"),
                     title = item.getString("title"),
@@ -35,9 +43,12 @@ class OfflineMetadataStore(
                     savedAt = item.getLong("savedAt"),
                     iconUrl = item.optString("iconUrl"),
                     rawHtmlPath = rawHtmlPath,
-                    cleanHtmlPath = cleanHtmlPath
+                    cleanHtmlPath = cleanHtmlPath,
+                    archiveHtmlPath = archiveHtmlPath,
+                    archiveDirPath = archiveDirPath
                 )
-                if (rawHtmlPath.isNotBlank() && File(rawHtmlPath).exists()) {
+                val displayPath = archiveHtmlPath ?: rawHtmlPath
+                if (displayPath.isNotBlank() && File(displayPath).exists()) {
                     add(page)
                 }
             }
@@ -54,10 +65,12 @@ class OfflineMetadataStore(
     @Synchronized
     fun deletePage(page: OfflinePage): Boolean {
         val remaining = loadPages().filterNot { it.id == page.id }
+        val archiveDeleted = page.archiveDirPath?.let { deleteDirectoryIfInsidePagesDir(it) } ?: true
         val rawDeleted = deleteIfExists(page.rawHtmlPath)
         val cleanDeleted = page.cleanHtmlPath?.let { deleteIfExists(it) } ?: true
+        val archiveHtmlDeleted = page.archiveHtmlPath?.let { deleteIfExists(it) } ?: true
         writePages(remaining)
-        return rawDeleted && cleanDeleted
+        return archiveDeleted && rawDeleted && cleanDeleted && archiveHtmlDeleted
     }
 
     @Synchronized
@@ -77,6 +90,8 @@ class OfflineMetadataStore(
                     .put("iconUrl", page.iconUrl)
                     .put("rawHtmlPath", page.rawHtmlPath)
                     .put("cleanHtmlPath", page.cleanHtmlPath ?: JSONObject.NULL)
+                    .put("archiveHtmlPath", page.archiveHtmlPath ?: JSONObject.NULL)
+                    .put("archiveDirPath", page.archiveDirPath ?: JSONObject.NULL)
             )
         }
         metadataFile.writeText(items.toString(), Charsets.UTF_8)
@@ -85,5 +100,14 @@ class OfflineMetadataStore(
     private fun deleteIfExists(path: String): Boolean {
         val file = File(path)
         return !file.exists() || file.delete()
+    }
+
+    private fun deleteDirectoryIfInsidePagesDir(path: String): Boolean {
+        val dir = File(path)
+        if (!dir.exists()) return true
+        val root = pagesDir.canonicalFile
+        val target = dir.canonicalFile
+        if (!target.path.startsWith(root.path + File.separator)) return false
+        return target.deleteRecursively()
     }
 }

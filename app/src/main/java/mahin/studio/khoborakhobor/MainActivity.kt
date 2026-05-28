@@ -1,18 +1,26 @@
 package mahin.studio.khoborakhobor
 
 import android.content.Intent
+import android.content.pm.ApplicationInfo
+import android.content.res.ColorStateList
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.StrictMode
 import android.os.SystemClock
 import android.util.Log
+import android.view.View
+import android.widget.ImageButton
+import android.widget.ImageView
+import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.DrawableRes
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
+import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -70,8 +78,10 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -82,6 +92,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
@@ -93,14 +104,24 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.doOnPreDraw
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.commitNow
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import coil3.compose.AsyncImage
-import coil3.request.CachePolicy
 import coil3.request.ImageRequest
 import coil3.request.crossfade
+import com.google.android.material.bottomnavigation.BottomNavigationView
 import mahin.studio.khoborakhobor.ui.theme.KhoborakhoborTheme
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.mozilla.geckoview.AllowOrDeny
@@ -114,233 +135,490 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 
 private const val APP_TAG = "Khoborakhobor"
-// TODO: Compose debug builds add runtime overhead; validate performance on a minified release build.
+private const val KEY_SELECTED_ITEM_ID = "selected_item_id"
+// Debug + Android Studio instrumentation is slower; validate performance with release APK or Run without Debugging.
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
+    private val viewModel: AppViewModel by viewModels()
+    private val controllerStore = RuntimeControllerStore()
+    private val readerRepository by lazy(LazyThreadSafetyMode.NONE) {
+        ReaderPageRepository(applicationContext)
+    }
+    internal val sourceIconCacheManager by lazy(LazyThreadSafetyMode.NONE) {
+        SourceIconCacheManager(applicationContext)
+    }
+
+    private lateinit var jankTracker: AppJankTracker
+    private lateinit var topBar: View
+    private lateinit var topBarMark: ImageView
+    private lateinit var topDivider: View
+    private lateinit var bottomDivider: View
+    private lateinit var topBarTitle: TextView
+    private lateinit var themeButton: ImageButton
+    private lateinit var bottomNav: BottomNavigationView
+    private lateinit var tabs: List<NativeTab>
+    private var selectedItemId: Int = R.id.nav_home
+    private var currentState = AppUiState()
+    private var overlayFragment: Fragment? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         val appStartMillis = SystemClock.elapsedRealtime()
         installSplashScreen()
+        installDebugStrictMode()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         if (!GeckoRuntimeProvider.isCreated()) {
             PerformanceLogger.mark("GeckoRuntime not created during app startup")
         }
 
-        val jankTracker = AppJankTracker(window)
-        val preferences = AppPreferences(applicationContext)
-        val offlineRepository = OfflinePageRepository(applicationContext)
-        val readerRepository = lazy(LazyThreadSafetyMode.NONE) {
-            ReaderPageRepository(applicationContext)
+        jankTracker = AppJankTracker(window)
+        selectedItemId = savedInstanceState?.getInt(KEY_SELECTED_ITEM_ID) ?: R.id.nav_home
+        setContentView(R.layout.activity_main_native)
+        bindShellViews()
+        tabs = createNativeTabs()
+        applyInsets()
+        setupBottomNav()
+        setupThemeButton()
+        updateJankStateForShell()
+
+        window.decorView.doOnPreDraw {
+            PerformanceLogger.logDuration("AppStart first native frame", appStartMillis)
         }
+        PerformanceLogger.logDuration("MainActivity onCreate", appStartMillis)
 
-        setContent {
-            DisposableEffect(Unit) {
-                onDispose { jankTracker.stop() }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.uiState.collectLatest { state ->
+                    currentState = state
+                    applyShellState(state)
+                    updateCurrentFragmentState(state)
+                }
             }
+        }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                sourceIconCacheManager.isLoading.collectLatest { isLoading ->
+                    jankTracker.setState("isIconLoading", isLoading.toString())
+                }
+            }
+        }
+        window.decorView.post {
+            setupTabFragments()
+            updateCurrentFragmentState(currentState)
+            viewModel.loadInitial()
+        }
+    }
 
-            val controllerStore = remember { RuntimeControllerStore() }
-            val appScope = rememberCoroutineScope()
-            var sourceCatalog by remember { mutableStateOf<List<NewsSource>>(emptyList()) }
-            var themePreference by remember { mutableStateOf(ThemePreference.System) }
-            var favoriteIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-            var disableAds by remember { mutableStateOf(false) }
-            var websiteDarkMode by remember { mutableStateOf(false) }
-            var offlinePages by remember { mutableStateOf<List<OfflinePage>>(emptyList()) }
-            var adBlockState by remember {
-                mutableStateOf(
-                    AdBlockState(
-                        enabled = false,
-                        status = UBlockStatus.DISABLED
-                    )
+    override fun onDestroy() {
+        jankTracker.stop()
+        super.onDestroy()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putInt(KEY_SELECTED_ITEM_ID, selectedItemId)
+        super.onSaveInstanceState(outState)
+    }
+
+    internal fun onOpenSource(source: NewsSource) {
+        showOverlay(
+            fragment = BrowserComposeFragment.newInstance(source.id),
+            tag = BrowserComposeFragment.TAG,
+            screen = "Browser"
+        )
+    }
+
+    internal fun onOpenOfflinePage(page: OfflinePage) {
+        showOverlay(
+            fragment = OfflineReaderComposeFragment.newInstance(page.id),
+            tag = OfflineReaderComposeFragment.TAG,
+            screen = "Reader"
+        )
+    }
+
+    internal fun closeOverlay() {
+        val fragment = overlayFragment ?: supportFragmentManager.findFragmentByTag(BrowserComposeFragment.TAG)
+            ?: supportFragmentManager.findFragmentByTag(OfflineReaderComposeFragment.TAG)
+        if (fragment != null) {
+            val selectedFragment = selectedTab()?.fragment
+            supportFragmentManager.commitNow {
+                remove(fragment)
+                tabFragments().forEach { tabFragment ->
+                    if (tabFragment == selectedFragment) show(tabFragment) else hide(tabFragment)
+                }
+            }
+        }
+        overlayFragment = null
+        setShellVisible(true)
+        updateJankStateForShell()
+    }
+
+    internal fun onToggleFavorite(source: NewsSource) {
+        viewModel.toggleFavorite(source.id)
+    }
+
+    internal fun onDeleteOfflinePage(page: OfflinePage) {
+        viewModel.deleteOfflinePage(page) { deleted ->
+            Toast.makeText(
+                applicationContext,
+                if (deleted) "Deleted" else "Could not delete page",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    internal fun onThemePreferenceChange(themePreference: ThemePreference) {
+        viewModel.setThemePreference(themePreference)
+    }
+
+    internal fun onDisableAdsChange(enabled: Boolean) {
+        viewModel.setDisableAds(enabled)
+        val controller = controllerStore.adBlockController
+        if (controller != null) {
+            controller.setEnabled(enabled) { nextState ->
+                viewModel.setAdBlockState(nextState)
+            }
+        }
+    }
+
+    internal fun onWebsiteDarkModeChange(enabled: Boolean) {
+        viewModel.setWebsiteDarkMode(enabled)
+    }
+
+    internal fun onClearCache(onResult: (Boolean) -> Unit) {
+        val runtime = GeckoRuntimeProvider.getIfCreated()
+        if (runtime == null) {
+            PerformanceLogger.mark("Gecko cache clear skipped runtime not initialized")
+            onResult(true)
+        } else {
+            clearGeckoCache(runtime, onResult)
+        }
+    }
+
+    internal suspend fun buildReaderPage(
+        source: NewsSource,
+        url: String,
+        darkMode: Boolean
+    ): Result<ReaderPage> {
+        return withContext(Dispatchers.IO) {
+            readerRepository.buildReaderPage(url, source, darkMode)
+        }
+    }
+
+    internal suspend fun buildOfflineReaderPage(
+        page: OfflinePage,
+        darkMode: Boolean
+    ): Result<ReaderPage> {
+        return withContext(Dispatchers.IO) {
+            readerRepository.buildOfflineReaderPage(page, darkMode)
+        }
+    }
+
+    internal suspend fun saveOfflinePage(
+        source: NewsSource,
+        url: String
+    ): Result<OfflinePage> {
+        val result = withContext(Dispatchers.IO) {
+            PerformanceLogger.trace("saveOfflinePage") {
+                readerRepository.fetchPageSnapshot(url, source).fold(
+                    onSuccess = { snapshot -> viewModel.saveOfflinePage(source, snapshot) },
+                    onFailure = { error -> Result.failure(error) }
                 )
             }
-            val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
-            val darkTheme = when (themePreference) {
-                ThemePreference.System -> systemDark
-                ThemePreference.Light -> false
-                ThemePreference.Dark -> true
-            }
+        }
+        if (result.isSuccess) {
+            viewModel.reloadOfflinePages()
+        }
+        return result
+    }
 
-            LaunchedEffect(Unit) {
-                PerformanceLogger.logDuration("AppStart first composition", appStartMillis)
-            }
+    internal fun runtimeWithExtensions(): GeckoRuntime {
+        val runtime = GeckoRuntimeProvider.get(
+            context = applicationContext,
+            disableAds = currentState.disableAds,
+            currentScreen = "Browser"
+        )
+        jankTracker.setState("isGeckoRuntimeInitialized", GeckoRuntimeProvider.isCreated().toString())
+        jankTracker.setState("isGeckoActive", GeckoRuntimeProvider.isCreated().toString())
+        if (currentState.disableAds) {
+            ensureAdBlockController(runtime)
+        }
+        return runtime
+    }
 
-            LaunchedEffect(Unit) {
-                withFrameNanos { }
-                val loadedPreferences = withContext(Dispatchers.IO) {
-                    LoadedPreferences(
-                        themePreference = preferences.loadThemePreference(),
-                        favoriteIds = preferences.loadFavoriteIds(),
-                        disableAds = preferences.loadDisableAds(),
-                        websiteReaderDarkModeEnabled = preferences.loadWebsiteDarkMode()
-                    )
+    internal fun runtimeOnly(): GeckoRuntime {
+        val runtime = GeckoRuntimeProvider.get(
+            context = applicationContext,
+            disableAds = currentState.disableAds,
+            currentScreen = "Reader"
+        )
+        jankTracker.setState("isGeckoRuntimeInitialized", GeckoRuntimeProvider.isCreated().toString())
+        jankTracker.setState("isGeckoActive", GeckoRuntimeProvider.isCreated().toString())
+        return runtime
+    }
+
+    internal fun setJankState(key: String, value: String) {
+        jankTracker.setState(key, value)
+    }
+
+    internal fun isDarkTheme(): Boolean = resolveDarkTheme(currentState.themePreference)
+
+    private fun bindShellViews() {
+        topBar = findViewById(R.id.topBar)
+        topBarMark = findViewById(R.id.topBarMark)
+        topDivider = findViewById(R.id.topDivider)
+        bottomDivider = findViewById(R.id.bottomDivider)
+        topBarTitle = findViewById(R.id.topBarTitle)
+        themeButton = findViewById(R.id.themeButton)
+        bottomNav = findViewById(R.id.bottom_navigation)
+    }
+
+    private fun applyInsets() {
+        val root = findViewById<View>(R.id.appRoot)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            topBar.setPadding(topBar.paddingLeft, bars.top, topBar.paddingRight, topBar.paddingBottom)
+            topBar.layoutParams = topBar.layoutParams.apply {
+                height = dp(56) + bars.top
+            }
+            bottomNav.setPadding(0, 0, 0, bars.bottom)
+            bottomNav.layoutParams = bottomNav.layoutParams.apply {
+                height = dp(64) + bars.bottom
+            }
+            insets
+        }
+    }
+
+    private fun setupTabFragments() {
+        val selectedTab = tabForItemId(selectedItemId) ?: tabs.first().also {
+            selectedItemId = it.itemId
+        }
+        supportFragmentManager.commitNow {
+            tabs.forEach { tab ->
+                if (!tab.fragment.isAdded) {
+                    add(R.id.fragment_container, tab.fragment, tab.tag)
                 }
-                themePreference = loadedPreferences.themePreference
-                favoriteIds = loadedPreferences.favoriteIds
-                disableAds = loadedPreferences.disableAds
-                websiteDarkMode = loadedPreferences.websiteReaderDarkModeEnabled
-                adBlockState = AdBlockState(
-                    enabled = loadedPreferences.disableAds,
-                    status = if (loadedPreferences.disableAds) {
-                        UBlockStatus.LOADING
-                    } else {
-                        UBlockStatus.DISABLED
-                    }
-                )
-            }
-
-            LaunchedEffect(Unit) {
-                withFrameNanos { }
-                sourceCatalog = withContext(Dispatchers.IO) {
-                    NewsSourceRepository.load(applicationContext)
-                }
-            }
-
-            LaunchedEffect(Unit) {
-                withFrameNanos { }
-                offlinePages = withContext(Dispatchers.IO) {
-                    offlineRepository.loadPages()
-                }
-            }
-
-            fun ensureAdBlockController(runtime: GeckoRuntime): AdBlockController {
-                controllerStore.adBlockController?.let { return it }
-                return AdBlockController(applicationContext, runtime).also { controller ->
-                    controllerStore.adBlockController = controller
-                    controller.start(disableAds) { adBlockState = it }
-                }
-            }
-
-            fun runtimeWithExtensions(): GeckoRuntime {
-                val runtime = GeckoRuntimeProvider.get(applicationContext, disableAds)
-                jankTracker.setState("isGeckoRuntimeInitialized", GeckoRuntimeProvider.isCreated().toString())
-                if (disableAds) {
-                    ensureAdBlockController(runtime)
-                }
-                return runtime
-            }
-
-            fun runtimeOnly(): GeckoRuntime {
-                val runtime = GeckoRuntimeProvider.get(applicationContext, disableAds)
-                jankTracker.setState("isGeckoRuntimeInitialized", GeckoRuntimeProvider.isCreated().toString())
-                return runtime
-            }
-
-            DisposableEffect(disableAds) {
-                if (controllerStore.adBlockController == null) {
-                    adBlockState = AdBlockState(
-                        enabled = disableAds,
-                        status = if (disableAds) UBlockStatus.LOADING else UBlockStatus.DISABLED
-                    )
-                }
-                onDispose { }
-            }
-
-            KhoborakhoborTheme(darkTheme = darkTheme) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    KhoborakhoborApp(
-                        sources = sourceCatalog,
-                        getGeckoRuntime = { runtimeWithExtensions() },
-                        getOfflineGeckoRuntime = { runtimeOnly() },
-                        favoriteIds = favoriteIds,
-                        offlinePages = offlinePages,
-                        themePreference = themePreference,
-                        darkTheme = darkTheme,
-                        disableAds = disableAds,
-                        adBlockState = adBlockState,
-                        websiteDarkMode = websiteDarkMode,
-                        onToggleFavorite = { source ->
-                            favoriteIds = if (source.id in favoriteIds) {
-                                favoriteIds - source.id
-                            } else {
-                                favoriteIds + source.id
-                            }
-                            preferences.saveFavoriteIds(favoriteIds)
-                        },
-                        onThemePreferenceChange = {
-                            themePreference = it
-                            preferences.saveThemePreference(it)
-                        },
-                        onDisableAdsChange = {
-                            disableAds = it
-                            preferences.saveDisableAds(it)
-                            adBlockState = AdBlockState(
-                                enabled = it,
-                                status = if (it) UBlockStatus.LOADING else UBlockStatus.DISABLED
-                            )
-                            val controller = controllerStore.adBlockController
-                            when {
-                                controller != null -> {
-                                    controller.setEnabled(it) { nextState ->
-                                        adBlockState = nextState
-                                    }
-                                }
-
-                                it -> {
-                                    val runtime = GeckoRuntimeProvider.get(applicationContext, true)
-                                    ensureAdBlockController(runtime).setEnabled(true) { nextState ->
-                                        adBlockState = nextState
-                                    }
-                                }
-                            }
-                        },
-                        onWebsiteDarkModeChange = { enabled ->
-                            websiteDarkMode = enabled
-                            preferences.saveWebsiteDarkMode(enabled)
-                        },
-                        onBuildReaderPage = { source, url, darkMode ->
-                            withContext(Dispatchers.IO) {
-                                readerRepository.value.buildReaderPage(url, source, darkMode)
-                            }
-                        },
-                        onBuildOfflineReaderPage = { page, darkMode ->
-                            withContext(Dispatchers.IO) {
-                                readerRepository.value.buildOfflineReaderPage(page, darkMode)
-                            }
-                        },
-                        onSaveOfflinePage = { source, url ->
-                            val result = withContext(Dispatchers.IO) {
-                                PerformanceLogger.trace("saveOfflinePage") {
-                                    readerRepository.value.fetchPageSnapshot(url, source).fold(
-                                        onSuccess = { snapshot -> offlineRepository.savePage(source, snapshot) },
-                                        onFailure = { error -> Result.failure(error) }
-                                    )
-                                }
-                            }
-                            if (result.isSuccess) {
-                                offlinePages = withContext(Dispatchers.IO) {
-                                    offlineRepository.loadPages()
-                                }
-                            }
-                            result
-                        },
-                        onDeleteOfflinePage = { page ->
-                            appScope.launch {
-                                val deleted = withContext(Dispatchers.IO) {
-                                    offlineRepository.deletePage(page)
-                                }
-                                offlinePages = withContext(Dispatchers.IO) {
-                                    offlineRepository.loadPages()
-                                }
-                                Toast.makeText(
-                                    applicationContext,
-                                    if (deleted) "Deleted" else "Could not delete page",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        },
-                        onClearCache = { onResult ->
-                            clearGeckoCache(runtimeWithExtensions(), onResult)
-                        },
-                        onJankStateChange = { key, value -> jankTracker.setState(key, value) }
-                    )
+                if (tab == selectedTab) {
+                    show(tab.fragment)
+                } else {
+                    hide(tab.fragment)
                 }
             }
         }
     }
+
+    private fun setupBottomNav() {
+        if (bottomNav.menu.findItem(selectedItemId) == null) {
+            selectedItemId = R.id.nav_home
+        }
+        bottomNav.selectedItemId = selectedItemId
+        bottomNav.setOnItemSelectedListener { item ->
+            showTab(item.itemId, logSwitch = true)
+            true
+        }
+    }
+
+    private fun setupThemeButton() {
+        themeButton.setOnClickListener {
+            onThemePreferenceChange(
+                if (isDarkTheme()) ThemePreference.Light else ThemePreference.Dark
+            )
+        }
+    }
+
+    private fun showTab(itemId: Int, logSwitch: Boolean) {
+        val tab = tabForItemId(itemId) ?: return
+        if (itemId == selectedItemId && overlayFragment == null) return
+        val start = SystemClock.elapsedRealtime()
+        selectedItemId = itemId
+        supportFragmentManager.commitNow {
+            tabs.forEach { currentTab ->
+                if (!currentTab.fragment.isAdded) {
+                    add(R.id.fragment_container, currentTab.fragment, currentTab.tag)
+                }
+                if (currentTab == tab) {
+                    show(currentTab.fragment)
+                } else {
+                    hide(currentTab.fragment)
+                }
+            }
+        }
+        setShellVisible(true)
+        overlayFragment = null
+        applyShellState(currentState)
+        updateCurrentFragmentState(currentState)
+        updateJankStateForShell()
+        if (logSwitch) {
+            PerformanceLogger.logDuration("Tab switch ${tabLabel(itemId)}", start)
+        }
+    }
+
+    private fun showOverlay(fragment: Fragment, tag: String, screen: String) {
+        setShellVisible(false)
+        overlayFragment?.let { existing ->
+            supportFragmentManager.commitNow { remove(existing) }
+        }
+        supportFragmentManager.commitNow {
+            tabFragments().forEach { tabFragment -> hide(tabFragment) }
+            add(R.id.fragment_container, fragment, tag)
+        }
+        overlayFragment = fragment
+        jankTracker.setState("currentScreen", screen)
+        jankTracker.setState("selectedTab", tabLabel(selectedItemId))
+        jankTracker.setState("isBrowserVisible", (screen == "Browser").toString())
+        jankTracker.setState("isGeckoActive", GeckoRuntimeProvider.isCreated().toString())
+        jankTracker.setState("isGeckoRuntimeInitialized", GeckoRuntimeProvider.isCreated().toString())
+        GeckoRuntimeProvider.setCurrentScreen(screen)
+    }
+
+    private fun setShellVisible(visible: Boolean) {
+        val visibility = if (visible) View.VISIBLE else View.GONE
+        topBar.visibility = visibility
+        topDivider.visibility = visibility
+        bottomDivider.visibility = visibility
+        bottomNav.visibility = visibility
+    }
+
+    private fun applyShellState(state: AppUiState) {
+        topBarTitle.text = if (selectedItemId == R.id.nav_home) getString(R.string.app_name) else tabLabel(selectedItemId)
+        themeButton.visibility = View.VISIBLE
+        themeButton.setImageResource(
+            if (resolveDarkTheme(state.themePreference)) R.drawable.ic_khobor_sun_24 else R.drawable.ic_khobor_moon_24
+        )
+        applyNativeColors(resolveDarkTheme(state.themePreference))
+    }
+
+    @Suppress("DEPRECATION")
+    private fun applyNativeColors(darkTheme: Boolean) {
+        val background = if (darkTheme) 0xFF080808.toInt() else 0xFFF4EFE6.toInt()
+        val text = if (darkTheme) 0xFFF5F2EC.toInt() else 0xFF17130D.toInt()
+        val muted = if (darkTheme) 0xFFA8A29A.toInt() else 0xFF6F675C.toInt()
+        val divider = if (darkTheme) 0xFF2A2A2A.toInt() else 0xFFDED6CA.toInt()
+        val ripple = 0x00000000
+        findViewById<View>(R.id.appRoot).setBackgroundColor(background)
+        topBar.setBackgroundColor(background)
+        bottomNav.setBackgroundColor(background)
+        topDivider.setBackgroundColor(divider)
+        bottomDivider.setBackgroundColor(divider)
+        topBarMark.imageTintList = ColorStateList.valueOf(text)
+        topBarTitle.setTextColor(text)
+        themeButton.imageTintList = ColorStateList.valueOf(muted)
+        bottomNav.itemRippleColor = ColorStateList.valueOf(ripple)
+        bottomNav.itemTextColor = ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+            intArrayOf(text, muted)
+        )
+        bottomNav.itemIconTintList = ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+            intArrayOf(text, muted)
+        )
+        window.statusBarColor = background
+        window.navigationBarColor = background
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !darkTheme
+            isAppearanceLightNavigationBars = !darkTheme
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = !darkTheme
+        }
+    }
+
+    private fun updateCurrentFragmentState(state: AppUiState) {
+        if (overlayFragment != null) return
+        (selectedTab()?.fragment as? NativeStateConsumer)?.render(state, isDarkTheme())
+    }
+
+    private fun updateJankStateForShell() {
+        val screen = tabLabel(selectedItemId)
+        jankTracker.setState("currentScreen", screen)
+        jankTracker.setState("selectedTab", screen)
+        jankTracker.setState("isBrowserVisible", "false")
+        jankTracker.setState("isGeckoActive", GeckoRuntimeProvider.isCreated().toString())
+        jankTracker.setState("isGeckoRuntimeInitialized", GeckoRuntimeProvider.isCreated().toString())
+        jankTracker.setState("isGeneratingReader", "false")
+        jankTracker.setState("isSavingOffline", "false")
+        GeckoRuntimeProvider.setCurrentScreen(screen)
+    }
+
+    private fun ensureAdBlockController(runtime: GeckoRuntime): AdBlockController {
+        controllerStore.adBlockController?.let { return it }
+        return AdBlockController(applicationContext, runtime).also { controller ->
+            controllerStore.adBlockController = controller
+            controller.start(currentState.disableAds) { viewModel.setAdBlockState(it) }
+        }
+    }
+
+    private fun createNativeTabs(): List<NativeTab> {
+        return listOf(
+            NativeTab(R.id.nav_home, existingOrCreateTabFragment("tab_home") { HomeNativeFragment() }, "tab_home"),
+            NativeTab(R.id.nav_sources, existingOrCreateTabFragment("tab_sources") { SourcesNativeFragment() }, "tab_sources"),
+            NativeTab(R.id.nav_offline, existingOrCreateTabFragment("tab_offline") { OfflineNativeFragment() }, "tab_offline"),
+            NativeTab(R.id.nav_favorites, existingOrCreateTabFragment("tab_favorites") { FavoritesNativeFragment() }, "tab_favorites"),
+            NativeTab(R.id.nav_settings, existingOrCreateTabFragment("tab_settings") { SettingsNativeFragment() }, "tab_settings")
+        )
+    }
+
+    private fun existingOrCreateTabFragment(tag: String, create: () -> Fragment): Fragment {
+        return supportFragmentManager.findFragmentByTag(tag) ?: create()
+    }
+
+    private fun tabForItemId(itemId: Int): NativeTab? {
+        return tabs.firstOrNull { it.itemId == itemId }
+    }
+
+    private fun selectedTab(): NativeTab? {
+        return if (::tabs.isInitialized) tabForItemId(selectedItemId) else null
+    }
+
+    private fun tabFragments(): List<Fragment> {
+        return if (::tabs.isInitialized) tabs.map { it.fragment } else emptyList()
+    }
+
+    private fun tabLabel(itemId: Int): String {
+        return when (itemId) {
+            R.id.nav_home -> "Home"
+            R.id.nav_sources -> "Sources"
+            R.id.nav_offline -> "Offline"
+            R.id.nav_favorites -> "Favorites"
+            R.id.nav_settings -> "Settings"
+            else -> "Home"
+        }
+    }
+
+    private fun resolveDarkTheme(themePreference: ThemePreference): Boolean {
+        return when (themePreference) {
+            ThemePreference.System -> {
+                val nightMask = resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
+                false
+            }
+            ThemePreference.Light -> false
+            ThemePreference.Dark -> true
+        }
+    }
+
+    private fun installDebugStrictMode() {
+        val debuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (!debuggable) return
+        StrictMode.setThreadPolicy(
+            StrictMode.ThreadPolicy.Builder()
+                .detectDiskReads()
+                .detectDiskWrites()
+                .detectNetwork()
+                .penaltyLog()
+                .build()
+        )
+    }
+
+    private fun dp(value: Int): Int {
+        return (value * resources.displayMetrics.density).toInt()
+    }
+
+    private data class NativeTab(
+        val itemId: Int,
+        val fragment: Fragment,
+        val tag: String
+    )
 }
 
 private class RuntimeControllerStore {
@@ -401,6 +679,7 @@ private enum class AppTab(
 @Composable
 private fun KhoborakhoborApp(
     sources: List<NewsSource>,
+    sourceIconCacheManager: SourceIconCacheManager,
     getGeckoRuntime: () -> GeckoRuntime,
     getOfflineGeckoRuntime: () -> GeckoRuntime,
     favoriteIds: Set<String>,
@@ -425,6 +704,7 @@ private fun KhoborakhoborApp(
     var selectedSourceId by remember { mutableStateOf<String?>(null) }
     var selectedOfflinePageId by remember { mutableStateOf<String?>(null) }
     var pendingTabSwitchStart by remember { mutableStateOf<Pair<AppTab, Long>?>(null) }
+    var composedTabs by remember { mutableStateOf(setOf(AppTab.Home)) }
     val selectedSource = remember(sources, selectedSourceId) {
         sources.firstOrNull { it.id == selectedSourceId }
     }
@@ -441,20 +721,29 @@ private fun KhoborakhoborApp(
         else -> selectedTab.label
     }
 
-    LaunchedEffect(currentScreen, selectedTab, sources.size, offlinePages.size) {
+    LaunchedEffect(currentScreen, selectedTab) {
         onJankStateChange("currentScreen", currentScreen)
         onJankStateChange("selectedTab", selectedTab.label)
         onJankStateChange("isBrowserVisible", (selectedSource != null).toString())
         onJankStateChange("isGeckoRuntimeInitialized", GeckoRuntimeProvider.isCreated().toString())
+        GeckoRuntimeProvider.setCurrentScreen(currentScreen)
         if (selectedSource == null) {
             onJankStateChange("isGeneratingReader", "false")
             onJankStateChange("isSavingOffline", "false")
         }
-        PerformanceLogger.mark(
-            "Diagnostics sourceCount=${sources.size} offlineCount=${offlinePages.size} " +
-                "geckoInitialized=${GeckoRuntimeProvider.isCreated()} currentScreen=$currentScreen " +
-                "lastJank=${AppJankTracker.lastJankEvent} lastSlow=${PerformanceLogger.lastOperation}"
-        )
+    }
+
+    LaunchedEffect(selectedTab) {
+        composedTabs = composedTabs + selectedTab
+    }
+
+    LaunchedEffect(sources.isNotEmpty()) {
+        if (sources.isNotEmpty()) {
+            AppTab.entries.forEach { tab ->
+                withFrameNanos { }
+                composedTabs = composedTabs + tab
+            }
+        }
     }
 
     selectedOfflinePage?.let { page ->
@@ -515,57 +804,72 @@ private fun KhoborakhoborApp(
         },
         containerColor = MaterialTheme.colorScheme.background
     ) { innerPadding ->
-        stateHolder.SaveableStateProvider(selectedTab.name) {
-            when (selectedTab) {
-                AppTab.Home -> HomeScreen(
-                    sources = sources,
-                    favoriteIds = favoriteIds,
-                    disableAds = disableAds,
-                    adBlockState = adBlockState,
-                    onOpenSource = { selectedSourceId = it.id },
-                    onToggleFavorite = onToggleFavorite,
-                    onJankStateChange = onJankStateChange,
-                    modifier = Modifier.padding(innerPadding)
-                )
+        Box(
+            modifier = Modifier
+                .padding(innerPadding)
+                .fillMaxSize()
+        ) {
+            AppTab.entries.forEach { tab ->
+                if (tab == selectedTab || tab in composedTabs) {
+                    key(tab) {
+                        stateHolder.SaveableStateProvider(tab.name) {
+                            KeepAliveTabLayer(active = selectedTab == tab) {
+                                when (tab) {
+                                    AppTab.Home -> HomeScreen(
+                                        sources = sources,
+                                        sourceIconCacheManager = sourceIconCacheManager,
+                                        favoriteIds = favoriteIds,
+                                        disableAds = disableAds,
+                                        adBlockState = adBlockState,
+                                        iconsEnabled = selectedTab == tab,
+                                        onOpenSource = { selectedSourceId = it.id },
+                                        onToggleFavorite = onToggleFavorite,
+                                        onJankStateChange = onJankStateChange
+                                    )
 
-                AppTab.Sources -> SourcesScreen(
-                    sources = sources,
-                    favoriteIds = favoriteIds,
-                    onOpenSource = { selectedSourceId = it.id },
-                    onToggleFavorite = onToggleFavorite,
-                    onJankStateChange = onJankStateChange,
-                    modifier = Modifier.padding(innerPadding)
-                )
+                                    AppTab.Sources -> SourcesScreen(
+                                        sources = sources,
+                                        sourceIconCacheManager = sourceIconCacheManager,
+                                        favoriteIds = favoriteIds,
+                                        iconsEnabled = selectedTab == tab,
+                                        onOpenSource = { selectedSourceId = it.id },
+                                        onToggleFavorite = onToggleFavorite,
+                                        onJankStateChange = onJankStateChange
+                                    )
 
-                AppTab.Offline -> OfflineScreen(
-                    pages = offlinePages,
-                    onOpenPage = { selectedOfflinePageId = it.id },
-                    onDeletePage = onDeleteOfflinePage,
-                    modifier = Modifier.padding(innerPadding)
-                )
+                                    AppTab.Offline -> OfflineScreen(
+                                        pages = offlinePages,
+                                        onOpenPage = { selectedOfflinePageId = it.id },
+                                        onDeletePage = onDeleteOfflinePage
+                                    )
 
-                AppTab.Favorites -> SourceCollectionScreen(
-                    title = "Favorites",
-                    sources = favoriteSources,
-                    favoriteIds = favoriteIds,
-                    emptyText = "Favorite sources will appear here.",
-                    onOpenSource = { selectedSourceId = it.id },
-                    onToggleFavorite = onToggleFavorite,
-                    onJankStateChange = onJankStateChange,
-                    modifier = Modifier.padding(innerPadding)
-                )
+                                    AppTab.Favorites -> SourceCollectionScreen(
+                                        title = "Favorites",
+                                        sources = favoriteSources,
+                                        sourceIconCacheManager = sourceIconCacheManager,
+                                        favoriteIds = favoriteIds,
+                                        emptyText = "Favorite sources will appear here.",
+                                        iconsEnabled = selectedTab == tab,
+                                        onOpenSource = { selectedSourceId = it.id },
+                                        onToggleFavorite = onToggleFavorite,
+                                        onJankStateChange = onJankStateChange
+                                    )
 
-                AppTab.Settings -> SettingsScreen(
-                    themePreference = themePreference,
-                    disableAds = disableAds,
-                    adBlockState = adBlockState,
-                    websiteDarkMode = websiteDarkMode,
-                    onThemePreferenceChange = onThemePreferenceChange,
-                    onDisableAdsChange = onDisableAdsChange,
-                    onWebsiteDarkModeChange = { onWebsiteDarkModeChange(it) },
-                    onClearCache = onClearCache,
-                    modifier = Modifier.padding(innerPadding)
-                )
+                                    AppTab.Settings -> SettingsScreen(
+                                        themePreference = themePreference,
+                                        disableAds = disableAds,
+                                        adBlockState = adBlockState,
+                                        websiteDarkMode = websiteDarkMode,
+                                        onThemePreferenceChange = onThemePreferenceChange,
+                                        onDisableAdsChange = onDisableAdsChange,
+                                        onWebsiteDarkModeChange = { onWebsiteDarkModeChange(it) },
+                                        onClearCache = onClearCache
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -713,11 +1017,28 @@ private fun AppBottomNavigation(
 }
 
 @Composable
+private fun KeepAliveTabLayer(
+    active: Boolean,
+    content: @Composable () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(if (active) 1f else -1f)
+            .alpha(if (active) 1f else 0f)
+    ) {
+        content()
+    }
+}
+
+@Composable
 private fun HomeScreen(
     sources: List<NewsSource>,
+    sourceIconCacheManager: SourceIconCacheManager,
     favoriteIds: Set<String>,
     disableAds: Boolean,
     adBlockState: AdBlockState,
+    iconsEnabled: Boolean,
     onOpenSource: (NewsSource) -> Unit,
     onToggleFavorite: (NewsSource) -> Unit,
     onJankStateChange: (String, String) -> Unit,
@@ -749,11 +1070,6 @@ private fun HomeScreen(
     val displayedSources = remember(popularSources, englishSources, liveSources) {
         popularSources + englishSources + liveSources
     }
-    val loadSourceIcons = rememberDeferredSourceIcons(
-        screenKey = "Home",
-        itemCount = displayedSources.size
-    )
-
     LaunchedEffect(Unit) {
         if (!firstCompositionLogged) {
             firstCompositionLogged = true
@@ -763,13 +1079,11 @@ private fun HomeScreen(
     LaunchedEffect(selectedCategory) {
         onJankStateChange("selectedCategory", selectedCategory ?: "All")
     }
-    SourceIconLoadingTelemetry(
-        screenName = "Home",
-        sources = displayedSources,
-        enabled = loadSourceIcons,
-        onJankStateChange = onJankStateChange
-    )
-    GridCompositionTelemetry(label = "Home", itemCount = displayedSources.size)
+
+    if (sources.isEmpty()) {
+        SourceListLoadingState(modifier = modifier)
+        return
+    }
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
@@ -820,7 +1134,8 @@ private fun HomeScreen(
             SourceCard(
                 source = source,
                 isFavorite = source.id in favoriteIds,
-                loadIcon = loadSourceIcons,
+                sourceIconCacheManager = sourceIconCacheManager,
+                loadIcon = iconsEnabled,
                 onOpen = { onOpenSource(source) },
                 onToggleFavorite = { onToggleFavorite(source) },
                 modifier = Modifier
@@ -843,7 +1158,8 @@ private fun HomeScreen(
             SourceCard(
                 source = source,
                 isFavorite = source.id in favoriteIds,
-                loadIcon = loadSourceIcons,
+                sourceIconCacheManager = sourceIconCacheManager,
+                loadIcon = iconsEnabled,
                 onOpen = { onOpenSource(source) },
                 onToggleFavorite = { onToggleFavorite(source) },
                 modifier = Modifier
@@ -866,7 +1182,8 @@ private fun HomeScreen(
             SourceCard(
                 source = source,
                 isFavorite = source.id in favoriteIds,
-                loadIcon = loadSourceIcons,
+                sourceIconCacheManager = sourceIconCacheManager,
+                loadIcon = iconsEnabled,
                 onOpen = { onOpenSource(source) },
                 onToggleFavorite = { onToggleFavorite(source) },
                 modifier = Modifier
@@ -934,7 +1251,9 @@ private fun HeaderStat(
 @Composable
 private fun SourcesScreen(
     sources: List<NewsSource>,
+    sourceIconCacheManager: SourceIconCacheManager,
     favoriteIds: Set<String>,
+    iconsEnabled: Boolean,
     onOpenSource: (NewsSource) -> Unit,
     onToggleFavorite: (NewsSource) -> Unit,
     onJankStateChange: (String, String) -> Unit,
@@ -956,20 +1275,14 @@ private fun SourcesScreen(
             }
         }
     }
-    val loadSourceIcons = rememberDeferredSourceIcons(
-        screenKey = "Sources-$selectedCategory-${query.trim()}",
-        itemCount = filteredSources.size
-    )
     LaunchedEffect(selectedCategory) {
         onJankStateChange("selectedCategory", selectedCategory)
     }
-    SourceIconLoadingTelemetry(
-        screenName = "Sources",
-        sources = filteredSources,
-        enabled = loadSourceIcons,
-        onJankStateChange = onJankStateChange
-    )
-    GridCompositionTelemetry(label = "Sources", itemCount = filteredSources.size)
+
+    if (sources.isEmpty()) {
+        SourceListLoadingState(modifier = modifier)
+        return
+    }
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
@@ -1019,7 +1332,8 @@ private fun SourcesScreen(
                 SourceCard(
                     source = source,
                     isFavorite = source.id in favoriteIds,
-                    loadIcon = loadSourceIcons,
+                    sourceIconCacheManager = sourceIconCacheManager,
+                    loadIcon = iconsEnabled,
                     onOpen = { onOpenSource(source) },
                     onToggleFavorite = { onToggleFavorite(source) },
                     modifier = Modifier
@@ -1035,8 +1349,10 @@ private fun SourcesScreen(
 private fun SourceCollectionScreen(
     title: String,
     sources: List<NewsSource>,
+    sourceIconCacheManager: SourceIconCacheManager,
     favoriteIds: Set<String>,
     emptyText: String,
+    iconsEnabled: Boolean,
     onOpenSource: (NewsSource) -> Unit,
     onToggleFavorite: (NewsSource) -> Unit,
     onJankStateChange: (String, String) -> Unit,
@@ -1057,20 +1373,9 @@ private fun SourceCollectionScreen(
             }
         }
     }
-    val loadSourceIcons = rememberDeferredSourceIcons(
-        screenKey = "$title-$selectedCategory",
-        itemCount = visibleSources.size
-    )
     LaunchedEffect(selectedCategory) {
         onJankStateChange("selectedCategory", selectedCategory)
     }
-    SourceIconLoadingTelemetry(
-        screenName = title,
-        sources = visibleSources,
-        enabled = loadSourceIcons,
-        onJankStateChange = onJankStateChange
-    )
-    GridCompositionTelemetry(label = title, itemCount = visibleSources.size)
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
@@ -1112,7 +1417,8 @@ private fun SourceCollectionScreen(
                 SourceCard(
                     source = source,
                     isFavorite = source.id in favoriteIds,
-                    loadIcon = loadSourceIcons,
+                    sourceIconCacheManager = sourceIconCacheManager,
+                    loadIcon = iconsEnabled,
                     onOpen = { onOpenSource(source) },
                     onToggleFavorite = { onToggleFavorite(source) },
                     modifier = Modifier
@@ -1453,8 +1759,7 @@ private fun adBlockStatusText(
         !disableAds -> "Off"
         adBlockState.status == UBlockStatus.ACTIVE -> "uBlock active"
         adBlockState.status == UBlockStatus.FALLBACK_ACTIVE -> "Privacy blocking active"
-        adBlockState.status == UBlockStatus.LOADING -> "Loading blocker"
-        adBlockState.status == UBlockStatus.FAILED -> "Blocker failed"
+        adBlockState.status == UBlockStatus.LOADING -> if (GeckoRuntimeProvider.isCreated()) "Loading..." else "uBlock active"
         else -> "Off"
     }
 }
@@ -1583,57 +1888,29 @@ private fun SourceSearchField(
 }
 
 @Composable
-private fun SourceIconLoadingTelemetry(
-    screenName: String,
-    sources: List<NewsSource>,
-    enabled: Boolean,
-    onJankStateChange: (String, String) -> Unit
+private fun SourceListLoadingState(
+    modifier: Modifier = Modifier
 ) {
-    val iconCount = remember(sources) {
-        sources.count { SourceIconResolver.iconUrl(it) != null }
-    }
-
-    LaunchedEffect(screenName, iconCount, enabled) {
-        if (!enabled || iconCount == 0) return@LaunchedEffect
-        val start = SystemClock.elapsedRealtime()
-        onJankStateChange("isLoadingIcons", "true")
-        PerformanceLogger.mark("Icon loading start $screenName count=$iconCount")
-        delay(1_200L)
-        PerformanceLogger.logDuration("Icon loading $screenName count=$iconCount", start)
-        onJankStateChange("isLoadingIcons", "false")
-    }
-}
-
-@Composable
-private fun rememberDeferredSourceIcons(
-    screenKey: Any,
-    itemCount: Int
-): Boolean {
-    var loadIcons by remember(screenKey, itemCount) { mutableStateOf(false) }
-
-    LaunchedEffect(screenKey, itemCount) {
-        loadIcons = false
-        if (itemCount <= 0) return@LaunchedEffect
-        withFrameNanos { }
-        delay(300L)
-        loadIcons = true
-    }
-
-    return loadIcons
-}
-
-@Composable
-private fun GridCompositionTelemetry(
-    label: String,
-    itemCount: Int
-) {
-    var logged by rememberSaveable(label) { mutableStateOf(false) }
-    LaunchedEffect(label, itemCount) {
-        if (!logged && itemCount > 0) {
-            val start = SystemClock.elapsedRealtime()
-            withFrameNanos { }
-            PerformanceLogger.logDuration("Card grid composition $label count=$itemCount", start)
-            logged = true
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+        ) {
+            Text(
+                text = "Loading sources",
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -1642,6 +1919,7 @@ private fun GridCompositionTelemetry(
 private fun SourceCard(
     source: NewsSource,
     isFavorite: Boolean,
+    sourceIconCacheManager: SourceIconCacheManager,
     loadIcon: Boolean,
     onOpen: () -> Unit,
     onToggleFavorite: () -> Unit,
@@ -1666,7 +1944,11 @@ private fun SourceCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SourceLogo(source = source, loadIcon = loadIcon)
+                SourceLogo(
+                    source = source,
+                    sourceIconCacheManager = sourceIconCacheManager,
+                    loadIcon = loadIcon
+                )
                 IconButton(
                     onClick = onToggleFavorite,
                     modifier = Modifier.size(30.dp)
@@ -1723,6 +2005,7 @@ private fun SourceCard(
 @Composable
 private fun SourceLogo(
     source: NewsSource,
+    sourceIconCacheManager: SourceIconCacheManager,
     loadIcon: Boolean
 ) {
     val context = LocalContext.current
@@ -1731,11 +2014,16 @@ private fun SourceLogo(
     val iconSizePx = remember(density) {
         with(density) { iconSize.roundToPx() }
     }
-    val iconUrl = remember(source.iconUrl, source.url) {
-        SourceIconResolver.iconUrl(source)
+    val iconStateFlow = remember(source.id) {
+        sourceIconCacheManager.stateFor(source)
     }
-    var failed by remember(iconUrl) {
-        mutableStateOf(iconUrl == null || SourceIconFailureCache.contains(iconUrl))
+    val iconState by iconStateFlow.collectAsState()
+
+    LaunchedEffect(source.id, source.iconUrl, source.url, loadIcon) {
+        if (loadIcon) {
+            withFrameNanos { }
+            sourceIconCacheManager.request(source)
+        }
     }
 
     Box(
@@ -1743,14 +2031,12 @@ private fun SourceLogo(
         contentAlignment = Alignment.Center
     ) {
         InitialsLogo(initials = SourceIconResolver.fallbackInitials(source))
-        val safeIconUrl = iconUrl
-        if (loadIcon && safeIconUrl != null && !failed) {
-            val request = remember(safeIconUrl, iconSizePx) {
+        val readyState = iconState as? SourceIconState.Ready
+        if (readyState != null) {
+            val request = remember(readyState.file.absolutePath, iconSizePx) {
                 ImageRequest.Builder(context)
-                    .data(safeIconUrl)
+                    .data(readyState.file)
                     .size(iconSizePx, iconSizePx)
-                    .memoryCachePolicy(CachePolicy.ENABLED)
-                    .diskCachePolicy(CachePolicy.ENABLED)
                     .crossfade(false)
                     .build()
             }
@@ -1762,22 +2048,9 @@ private fun SourceLogo(
                     .clip(RoundedCornerShape(8.dp))
                     .background(MaterialTheme.colorScheme.surface),
                 contentScale = ContentScale.Fit,
-                onError = {
-                    SourceIconFailureCache.add(safeIconUrl)
-                    failed = true
-                }
+                onError = { sourceIconCacheManager.request(source) }
             )
         }
-    }
-}
-
-private object SourceIconFailureCache {
-    private val failedUrls = ConcurrentHashMap.newKeySet<String>()
-
-    fun contains(url: String?): Boolean = url != null && failedUrls.contains(url)
-
-    fun add(url: String) {
-        failedUrls.add(url)
     }
 }
 
@@ -1846,7 +2119,7 @@ private fun EmptyState(text: String) {
 }
 
 @Composable
-private fun OfflineReaderScreen(
+internal fun OfflineReaderScreen(
     page: OfflinePage,
     getGeckoRuntime: () -> GeckoRuntime,
     readerDarkMode: Boolean,
@@ -1855,12 +2128,12 @@ private fun OfflineReaderScreen(
     onClose: () -> Unit,
     onJankStateChange: (String, String) -> Unit
 ) {
-    val rawFile = remember(page.rawHtmlPath) { File(page.rawHtmlPath) }
+    val offlineFile = remember(page.offlineDisplayPath) { File(page.offlineDisplayPath) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     var localReaderPath by remember(page.id) { mutableStateOf<String?>(null) }
     var renderError by remember(page.id) { mutableStateOf(false) }
     var readerBusy by remember(page.id) { mutableStateOf(false) }
-    var isLoading by remember { mutableStateOf(rawFile.exists()) }
+    var isLoading by remember { mutableStateOf(offlineFile.exists()) }
     var progress by remember { mutableFloatStateOf(0f) }
 
     fun onMain(block: () -> Unit) {
@@ -1873,7 +2146,7 @@ private fun OfflineReaderScreen(
 
     BackHandler(onBack = onClose)
 
-    if (!rawFile.exists()) {
+    if (!offlineFile.exists()) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -2043,8 +2316,8 @@ private fun OfflineReaderTopBar(
     onBack: () -> Unit
 ) {
     val darkUi = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val toolbarBackground = if (darkUi) Color(0xFF101010) else Color(0xFFF7F6F2)
-    val toolbarContent = if (darkUi) Color.White else Color(0xFF111111)
+    val toolbarBackground = if (darkUi) Color(0xFF080808) else Color(0xFFF4EFE6)
+    val toolbarContent = if (darkUi) Color(0xFFF5F2EC) else Color(0xFF17130D)
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -2103,7 +2376,7 @@ private fun OfflineReaderTopBar(
 }
 
 @Composable
-private fun BrowserScreen(
+internal fun BrowserScreen(
     source: NewsSource,
     allSources: List<NewsSource>,
     getGeckoRuntime: () -> GeckoRuntime,
@@ -2412,8 +2685,8 @@ private fun BrowserTopBar(
     onHome: () -> Unit
 ) {
     val darkUi = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val toolbarBackground = if (darkUi) Color(0xFF101010) else Color(0xFFF7F6F2)
-    val toolbarContent = if (darkUi) Color.White else Color(0xFF111111)
+    val toolbarBackground = if (darkUi) Color(0xFF080808) else Color(0xFFF4EFE6)
+    val toolbarContent = if (darkUi) Color(0xFFF5F2EC) else Color(0xFF17130D)
     Column(
         modifier = Modifier
             .fillMaxWidth()

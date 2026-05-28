@@ -10,6 +10,7 @@ import java.util.UUID
 class OfflinePageRepository(context: Context) {
     private val pagesDir = File(context.filesDir, "offline_pages")
     private val metadataStore = OfflineMetadataStore(pagesDir)
+    private val archiver = OfflinePageArchiver(pagesDir)
 
     @Synchronized
     fun loadPages(): List<OfflinePage> {
@@ -28,8 +29,7 @@ class OfflinePageRepository(context: Context) {
 
                 val savedAt = snapshot.savedAt.takeIf { it > 0L } ?: System.currentTimeMillis()
                 val id = "page_${savedAt}_${UUID.randomUUID().toString().take(8)}"
-                val rawHtmlFile = File(pagesDir, "$id.raw.html")
-                rawHtmlFile.writeText(snapshot.rawHtml, Charsets.UTF_8)
+                val archivedPage = archiver.archive(id, source, snapshot.copy(savedAt = savedAt))
                 val title = cleanTitle(snapshot.title).ifBlank {
                     "${source.name} ${fallbackDate(savedAt)}"
                 }
@@ -43,8 +43,10 @@ class OfflinePageRepository(context: Context) {
                     originalUrl = snapshot.url.ifBlank { source.url },
                     savedAt = savedAt,
                     iconUrl = source.iconUrl,
-                    rawHtmlPath = rawHtmlFile.absolutePath,
-                    cleanHtmlPath = null
+                    rawHtmlPath = archivedPage.rawHtmlPath,
+                    cleanHtmlPath = null,
+                    archiveHtmlPath = archivedPage.archiveHtmlPath,
+                    archiveDirPath = archivedPage.archiveDirPath
                 )
 
                 metadataStore.upsertPage(page)

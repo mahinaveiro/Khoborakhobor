@@ -4,17 +4,28 @@ import android.util.Log
 import android.view.Window
 import androidx.metrics.performance.JankStats
 import androidx.metrics.performance.PerformanceMetricsState
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 class AppJankTracker(window: Window) {
     private val metricsStateHolder = PerformanceMetricsState.getHolderForHierarchy(window.decorView)
+    private val frameCount = AtomicInteger(0)
+    private val jankCount = AtomicInteger(0)
+    private val worstFrameMs = AtomicLong(0L)
+    private val worstState = java.util.concurrent.atomic.AtomicReference("none")
     private val jankStats = JankStats.createAndTrack(window) { frameData ->
-        if (frameData.isJank) {
-            val stateText = frameData.states.joinToString(",") { state ->
+        frameCount.incrementAndGet()
+        val frameMs = frameData.frameDurationUiNanos / NANOS_PER_MS
+        if (frameMs > worstFrameMs.get()) {
+            worstFrameMs.set(frameMs)
+            worstState.set(frameData.states.joinToString(",") { state ->
                 "${state.key}=${state.value}"
-            }
-            val event = "${frameData.frameDurationUiNanos / NANOS_PER_MS}ms $stateText"
+            }.ifBlank { "none" })
+        }
+        if (frameData.isJank) {
+            jankCount.incrementAndGet()
+            val event = "${frameMs}ms ${worstState.get()}"
             lastJankEvent = event
-            Log.w(TAG, event)
         }
     }
 
@@ -28,6 +39,11 @@ class AppJankTracker(window: Window) {
 
     fun stop() {
         jankStats.isTrackingEnabled = false
+        Log.i(
+            TAG,
+            "JankStats summary frames=${frameCount.get()} " +
+                "jank=${jankCount.get()} worst=${worstFrameMs.get()}ms state=${worstState.get()}"
+        )
     }
 
     companion object {

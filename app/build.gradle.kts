@@ -19,7 +19,7 @@ android {
     }
 
     buildTypes {
-        // TODO: Debug Compose builds can be slower; judge final smoothness using release build or Run without Debugging.
+        // Debug + Android Studio instrumentation is slower; judge smoothness with release APK or Run without Debugging.
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -55,8 +55,17 @@ composeCompiler {
 
 dependencies {
 
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.fragment:fragment-ktx:1.8.5")
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
+    implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.2.0")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.ktx)
+    implementation(libs.androidx.fragment.ktx)
+    implementation(libs.androidx.recyclerview)
+    implementation(libs.material)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

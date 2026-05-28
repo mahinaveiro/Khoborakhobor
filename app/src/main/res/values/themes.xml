@@ -1,17 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.Khoborakhobor" parent="android:style/Theme.Material.Light.NoActionBar">
+    <style name="Theme.Khoborakhobor" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowActionBar">false</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:navigationBarColor">@color/splash_background</item>
+        <item name="android:statusBarColor">@color/khobor_background</item>
+        <item name="android:navigationBarColor">@color/khobor_background</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="colorPrimary">@color/khobor_text</item>
+        <item name="colorPrimaryVariant">@color/khobor_text</item>
+        <item name="colorOnPrimary">@color/khobor_surface</item>
+        <item name="colorSecondary">@color/khobor_text</item>
+        <item name="android:fontFamily">sans</item>
     </style>
 
     <style name="Theme.App.Starting" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/splash_background</item>
         <item name="windowSplashScreenAnimatedIcon">@drawable/khobor_mark_intro</item>
         <item name="postSplashScreenTheme">@style/Theme.Khoborakhobor</item>
+    </style>
+
+    <style name="TextAppearance.Khobor.BottomNav" parent="TextAppearance.MaterialComponents.Caption">
+        <item name="android:textSize">11sp</item>
+        <item name="android:textStyle">bold</item>
     </style>
 </resources>

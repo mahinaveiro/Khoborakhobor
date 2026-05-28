@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.jsoup.Jsoup
 import java.io.File
 import java.io.IOException
 import java.text.SimpleDateFormat
@@ -49,18 +50,38 @@ class ReaderPageRepository(context: Context) {
     ): Result<ReaderPage> {
         return runCatching {
             BackgroundThreadGuard.requireBackgroundThread("generateReaderHtml")
-            val rawHtmlFile = File(page.rawHtmlPath)
-            if (!rawHtmlFile.exists()) {
-                throw IOException("Missing raw offline HTML: ${page.rawHtmlPath}")
+            val archiveFile = File(page.offlineDisplayPath)
+            if (!archiveFile.exists()) {
+                throw IOException("Missing offline HTML: ${page.offlineDisplayPath}")
             }
-            writeReaderFile(
-                fileName = "offline_reader_${page.id}.html",
-                rawHtml = rawHtmlFile.readText(Charsets.UTF_8),
-                originalUrl = page.originalUrl,
+            if (!darkMode) {
+                return@runCatching ReaderPage(
+                    title = page.title,
+                    originalUrl = page.originalUrl,
+                    localHtmlPath = archiveFile.absolutePath
+                )
+            }
+            val cacheFile = offlineOverlayCacheFile(page, archiveFile)
+            if (cacheFile.exists() && cacheFile.length() > 0L) {
+                PerformanceLogger.mark("generateReaderHtml cacheHit page=${page.id} darkMode=$darkMode")
+                return@runCatching ReaderPage(
+                    title = page.title,
+                    originalUrl = page.originalUrl,
+                    localHtmlPath = cacheFile.absolutePath
+                )
+            }
+            PerformanceLogger.mark("generateReaderHtml cacheMiss page=${page.id} darkMode=$darkMode")
+            cacheFile.writeText(
+                appendOfflineDarkOverlay(
+                    html = archiveFile.readText(Charsets.UTF_8),
+                    archiveFile = archiveFile
+                ),
+                Charsets.UTF_8
+            )
+            ReaderPage(
                 title = page.title,
-                sourceName = page.sourceName,
-                darkMode = darkMode,
-                savedAt = page.savedAt
+                originalUrl = page.originalUrl,
+                localHtmlPath = cacheFile.absolutePath
             )
         }.onFailure { error ->
             Log.e(TAG, "Could not build offline reader page", error)
@@ -114,6 +135,30 @@ class ReaderPageRepository(context: Context) {
         )
     }
 
+    private fun offlineOverlayCacheFile(
+        page: OfflinePage,
+        archiveFile: File
+    ): File {
+        readerCacheDir.mkdirs()
+        val modified = archiveFile.lastModified().coerceAtLeast(0L)
+        val safePageId = page.id.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        return File(readerCacheDir, "offline_archive_${safePageId}_dark_$modified.html")
+    }
+
+    private fun appendOfflineDarkOverlay(html: String, archiveFile: File): String {
+        val doc = Jsoup.parse(html, archiveFile.toURI().toString())
+        doc.outputSettings().prettyPrint(false)
+        doc.head().select("style[data-khobor-offline-dark]").remove()
+        doc.head().select("base").remove()
+        archiveFile.parentFile?.let { parent ->
+            doc.head().prependElement("base").attr("href", parent.toURI().toString())
+        }
+        doc.head().appendElement("style")
+            .attr("data-khobor-offline-dark", "true")
+            .appendText(OFFLINE_DARK_OVERLAY_CSS)
+        return doc.outerHtml()
+    }
+
     private fun fetchRawHtml(url: String): FetchedPage {
         val request = Request.Builder()
             .url(url)
@@ -149,6 +194,17 @@ class ReaderPageRepository(context: Context) {
         const val TAG = "ReaderPageRepository"
         const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Khoborakhobor/1.0 Mobile Safari/537.36"
+        val OFFLINE_DARK_OVERLAY_CSS = """
+            :root{color-scheme:dark!important}
+            html,body{background-color:#080808!important;color:#F5F2EC!important}
+            body,main,article,section,header,footer,nav,aside,div,table,tbody,thead,tfoot,tr,td,th,ul,ol,li,form,label,figure,figcaption,blockquote{border-color:#2A2A2A!important}
+            main,article,section,header,footer,nav,aside,div,table,td,th,form,input,textarea,select,button{background-color:#151515!important;color:#F5F2EC!important}
+            p,span,h1,h2,h3,h4,h5,h6,li,blockquote,figcaption,strong,b,em,small,label,time{color:#F5F2EC!important}
+            a,a span{color:#E8DFD0!important}
+            input,textarea,select,button{border-color:#2A2A2A!important}
+            hr{border-color:#2A2A2A!important;background-color:#2A2A2A!important}
+            img,video,picture,svg,canvas,iframe{background-color:transparent!important}
+        """.trimIndent()
     }
 }
 

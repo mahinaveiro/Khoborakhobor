@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="splash_background">#050505</color>
+    <color name="splash_background">#080808</color>
+    <color name="khobor_surface">#FF151515</color>
+    <color name="khobor_surface_alt">#FF1D1D1D</color>
+    <color name="khobor_background">#FF080808</color>
+    <color name="khobor_text">#FFF5F2EC</color>
+    <color name="khobor_text_muted">#FFA8A29A</color>
+    <color name="khobor_divider">#FF2A2A2A</color>
 </resources>
