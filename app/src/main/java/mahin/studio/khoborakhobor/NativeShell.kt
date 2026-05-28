@@ -346,6 +346,13 @@ internal class SettingsNativeFragment : Fragment(R.layout.fragment_settings), Na
             panel.addView(settingsLinkRow("Terms & Conditions", R.drawable.ic_khobor_archive_24, AppLinks.TERMS_URL, "terms"))
             panel.addView(settingsDivider())
             panel.addView(settingsLinkRow("FAQ / Guides", R.drawable.ic_khobor_help_24, AppLinks.FAQ_URL, "faq"))
+
+            panel.addView(TextView(requireContext()).apply {
+                text = "Created by Mahin • Owner of The Open Atlas"
+                textSize = 12f
+                gravity = android.view.Gravity.CENTER
+                setPadding(0, dp(14), 0, 0)
+            })
         }
     }
 

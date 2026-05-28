@@ -325,6 +325,13 @@ class MainActivity : AppCompatActivity() {
             controller.setEnabled(enabled) { nextState ->
                 viewModel.setAdBlockState(nextState)
             }
+        } else {
+            viewModel.setAdBlockState(
+                AdBlockState(
+                    enabled = enabled,
+                    status = if (enabled) UBlockStatus.ACTIVE else UBlockStatus.DISABLED
+                )
+            )
         }
     }
 
@@ -742,6 +749,7 @@ class MainActivity : AppCompatActivity() {
         topBarMark.imageTintList = ColorStateList.valueOf(palette.primaryText)
         topBarTitle.setTextColor(palette.primaryText)
         themeButton.imageTintList = ColorStateList.valueOf(palette.secondaryText)
+        addSourceButton.imageTintList = ColorStateList.valueOf(palette.secondaryText)
         bottomNav.itemRippleColor = ColorStateList.valueOf(ThemePalette.TRANSPARENT)
         bottomNav.itemTextColor = ColorStateList(
             arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),

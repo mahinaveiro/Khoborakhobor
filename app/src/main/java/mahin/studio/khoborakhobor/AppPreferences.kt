@@ -49,16 +49,17 @@ class AppPreferences(context: Context) {
             val list = mutableListOf<NewsSource>()
             for (i in 0 until array.length()) {
                 val obj = array.getJSONObject(i)
+                val url = obj.getString("url")
                 list.add(
                     NewsSource(
                         id = obj.getString("id"),
                         name = obj.getString("name"),
                         category = obj.getString("category"),
                         language = "en",
-                        url = obj.getString("url"),
+                        url = url,
                         country = "US",
                         type = "general",
-                        iconUrl = SourceIconResolver.faviconUrl(obj.getString("url")),
+                        iconUrl = obj.optString("iconUrl").ifBlank { SourceIconResolver.faviconUrl(url) },
                         isCustom = obj.optBoolean("isCustom", true),
                         createdAt = obj.optLong("createdAt", 0L)
                     )
@@ -79,6 +80,7 @@ class AppPreferences(context: Context) {
                     put("name", source.name)
                     put("url", source.url)
                     put("category", source.category)
+                    put("iconUrl", source.iconUrl)
                     put("isCustom", source.isCustom)
                     put("createdAt", source.createdAt)
                 }

@@ -184,7 +184,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 disableAds = enabled,
                 adBlockState = AdBlockState(
                     enabled = enabled,
-                    status = if (enabled) UBlockStatus.LOADING else UBlockStatus.DISABLED
+                    status = if (enabled) UBlockStatus.ACTIVE else UBlockStatus.DISABLED
                 )
             )
         }

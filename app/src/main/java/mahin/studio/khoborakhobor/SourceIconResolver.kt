@@ -26,6 +26,6 @@ object SourceIconResolver {
             ?.lowercase()
             ?.removePrefix("www.")
             ?: return ""
-        return "https://www.google.com/s2/favicons?domain=$host&sz=64"
+        return "https://www.google.com/s2/favicons?domain=$host&sz=128"
     }
 }
