@@ -52,7 +52,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             val sourcesDeferred = async(Dispatchers.IO) {
-                NewsSourceRepository.load(appContext)
+                val customs = preferences.loadCustomSources()
+                NewsSourceRepository.load(appContext, customs)
             }
             val offlineDeferred = async(Dispatchers.IO) {
                 offlineRepository.loadPages()
@@ -89,6 +90,70 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     offlinePages = offlinePages,
                     offlineLoaded = true
+                )
+            }
+        }
+    }
+
+    fun addCustomSource(name: String, url: String, category: String, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            val error = withContext(Dispatchers.IO) {
+                val normalizedUrl = NewsSourceRepository.normalizeUrl(url)
+                val allSources = uiState.value.sources
+                val duplicate = NewsSourceRepository.isDuplicateSource(normalizedUrl, allSources)
+                if (duplicate != null) {
+                    return@withContext "${duplicate.name} already exists in ${duplicate.category}"
+                }
+
+                val customSources = preferences.loadCustomSources().toMutableList()
+                val newSource = NewsSource(
+                    id = "custom_" + System.currentTimeMillis(),
+                    name = name,
+                    category = category,
+                    language = "en",
+                    url = normalizedUrl,
+                    country = "US",
+                    type = "general",
+                    iconUrl = SourceIconResolver.faviconUrl(normalizedUrl),
+                    isCustom = true,
+                    createdAt = System.currentTimeMillis()
+                )
+                customSources.add(newSource)
+                preferences.saveCustomSources(customSources)
+                null
+            }
+
+            if (error == null) {
+                val customs = withContext(Dispatchers.IO) { preferences.loadCustomSources() }
+                val merged = withContext(Dispatchers.IO) { NewsSourceRepository.load(appContext, customs) }
+                _uiState.update { it.copy(sources = merged) }
+            }
+            onResult(error)
+        }
+    }
+
+    fun deleteCustomSource(source: NewsSource) {
+        viewModelScope.launch {
+            val nextFavorites = if (source.id in _uiState.value.favoriteIds) {
+                _uiState.value.favoriteIds - source.id
+            } else {
+                null
+            }
+
+            withContext(Dispatchers.IO) {
+                val customSources = preferences.loadCustomSources().filter { it.id != source.id }
+                preferences.saveCustomSources(customSources)
+                if (nextFavorites != null) {
+                    preferences.saveFavoriteIds(nextFavorites)
+                }
+            }
+
+            val customs = withContext(Dispatchers.IO) { preferences.loadCustomSources() }
+            val merged = withContext(Dispatchers.IO) { NewsSourceRepository.load(appContext, customs) }
+            _uiState.update {
+                it.copy(
+                    sources = merged,
+                    favoriteIds = nextFavorites ?: it.favoriteIds
                 )
             }
         }

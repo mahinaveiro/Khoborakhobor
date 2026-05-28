@@ -11,7 +11,9 @@ data class NewsSource(
     val url: String,
     val country: String,
     val type: String,
-    val iconUrl: String
+    val iconUrl: String,
+    val isCustom: Boolean = false,
+    val createdAt: Long = 0L
 )
 
 enum class ThemePreference {

@@ -16,6 +16,13 @@ import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
+import android.graphics.drawable.ColorDrawable
+import android.view.LayoutInflater
+import android.view.ViewGroup
+import android.widget.ArrayAdapter
+import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.Spinner
 import androidx.annotation.DrawableRes
 import androidx.activity.compose.BackHandler
 import androidx.activity.enableEdgeToEdge
@@ -150,6 +157,10 @@ class MainActivity : AppCompatActivity() {
     internal val sourceIconCacheManager by lazy(LazyThreadSafetyMode.NONE) {
         SourceIconCacheManager(applicationContext)
     }
+    private val preferences by lazy(LazyThreadSafetyMode.NONE) {
+        AppPreferences(applicationContext)
+    }
+    private var updateDismissedThisSession = false
 
     private lateinit var jankTracker: AppJankTracker
     private lateinit var topBar: View
@@ -158,6 +169,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var bottomDivider: View
     private lateinit var topBarTitle: TextView
     private lateinit var themeButton: ImageButton
+    private lateinit var addSourceButton: ImageButton
     private lateinit var bottomNav: BottomNavigationView
     private lateinit var tabs: List<NativeTab>
     private var selectedItemId: Int = R.id.nav_home
@@ -184,6 +196,7 @@ class MainActivity : AppCompatActivity() {
         applyInsets()
         setupBottomNav()
         setupThemeButton()
+        setupAddSourceButton()
         updateJankStateForShell()
 
         window.decorView.doOnPreDraw {
@@ -216,6 +229,7 @@ class MainActivity : AppCompatActivity() {
         }
         window.decorView.post {
             attachInitialTabs()
+            checkUpdatesAndCommunityDialog()
         }
     }
 
@@ -264,6 +278,30 @@ class MainActivity : AppCompatActivity() {
 
     internal fun onToggleFavorite(source: NewsSource) {
         viewModel.toggleFavorite(source.id)
+    }
+
+    internal fun onDeleteCustomSource(source: NewsSource) {
+        val darkTheme = isDarkTheme()
+        val palette = ThemeManager.palette(darkTheme)
+
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Remove custom source?")
+            .setMessage("Are you sure you want to remove ${source.name}?")
+            .setPositiveButton("Remove") { _, _ ->
+                viewModel.deleteCustomSource(source)
+                Toast.makeText(this, "Removed successfully", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .create()
+
+        dialog.setOnShowListener {
+            val removeBtn = dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)
+            val cancelBtn = dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_NEGATIVE)
+            removeBtn.setTextColor(palette.primaryText)
+            cancelBtn.setTextColor(palette.secondaryText)
+        }
+        dialog.show()
+        dialog.window?.setBackgroundDrawable(ColorDrawable(palette.cardBackground))
     }
 
     internal fun onDeleteOfflinePage(page: OfflinePage) {
@@ -395,6 +433,7 @@ class MainActivity : AppCompatActivity() {
         bottomDivider = findViewById(R.id.bottomDivider)
         topBarTitle = findViewById(R.id.topBarTitle)
         themeButton = findViewById(R.id.themeButton)
+        addSourceButton = findViewById(R.id.addSourceButton)
         bottomNav = findViewById(R.id.bottom_navigation)
     }
 
@@ -463,6 +502,171 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun setupAddSourceButton() {
+        addSourceButton.setOnClickListener {
+            showAddSourceDialog()
+        }
+    }
+
+    private fun showAddSourceDialog() {
+        val darkTheme = isDarkTheme()
+        val palette = ThemeManager.palette(darkTheme)
+
+        val dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_add_source, null)
+        val inputName = dialogView.findViewById<EditText>(R.id.inputName)
+        val inputLink = dialogView.findViewById<EditText>(R.id.inputLink)
+        val spinner = dialogView.findViewById<Spinner>(R.id.categorySpinner)
+        val dialogTitle = dialogView.findViewById<TextView>(R.id.dialogTitle)
+
+        dialogTitle.setTextColor(palette.primaryText)
+        inputName.setTextColor(palette.primaryText)
+        inputName.setHintTextColor(palette.secondaryText)
+        inputLink.setTextColor(palette.primaryText)
+        inputLink.setHintTextColor(palette.secondaryText)
+
+        val categories = listOf("Bangla", "English", "International", "Portal", "Sports", "Live", "Agency", "Other")
+        val spinnerAdapter = object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, categories) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val v = super.getView(position, convertView, parent)
+                (v as? TextView)?.setTextColor(palette.primaryText)
+                return v
+            }
+            override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val v = super.getDropDownView(position, convertView, parent)
+                v.setBackgroundColor(palette.cardBackground)
+                (v as? TextView)?.setTextColor(palette.primaryText)
+                return v
+            }
+        }.apply {
+            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        }
+        spinner.adapter = spinnerAdapter
+
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setView(dialogView)
+            .setPositiveButton("Add", null)
+            .setNegativeButton("Cancel", null)
+            .create()
+
+        dialog.setOnShowListener {
+            val addButton = dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)
+            val cancelButton = dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_NEGATIVE)
+            addButton.setTextColor(palette.primaryText)
+            cancelButton.setTextColor(palette.secondaryText)
+
+            addButton.setOnClickListener {
+                val name = inputName.text.toString().trim()
+                var link = inputLink.text.toString().trim()
+                val category = spinner.selectedItem.toString()
+
+                if (name.isEmpty()) {
+                    inputName.error = "Name required"
+                    return@setOnClickListener
+                }
+                if (link.isEmpty()) {
+                    inputLink.error = "Link required"
+                    return@setOnClickListener
+                }
+
+                if (!link.startsWith("http://", ignoreCase = true) && !link.startsWith("https://", ignoreCase = true)) {
+                    link = "https://$link"
+                }
+
+                viewModel.addCustomSource(name, link, category) { error ->
+                    if (error != null) {
+                        Toast.makeText(this@MainActivity, error, Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(this@MainActivity, "Added successfully", Toast.LENGTH_SHORT).show()
+                        dialog.dismiss()
+                    }
+                }
+            }
+        }
+
+        dialog.show()
+        dialog.window?.setBackgroundDrawable(ColorDrawable(palette.cardBackground))
+    }
+
+    private fun checkUpdatesAndCommunityDialog() {
+        lifecycleScope.launch {
+            kotlinx.coroutines.delay(800)
+            val updateInfo = withContext(Dispatchers.IO) {
+                UpdateChecker.checkForUpdates()
+            }
+            if (isFinishing || isDestroyed) return@launch
+            if (updateInfo != null && updateInfo.hasUpdate && !updateDismissedThisSession) {
+                showUpdateDialog(updateInfo)
+            } else {
+                if (!preferences.isCommunityDialogDismissed()) {
+                    showTelegramCommunityDialog()
+                }
+            }
+        }
+    }
+
+    private fun showUpdateDialog(info: UpdateInfo) {
+        val darkTheme = isDarkTheme()
+        val palette = ThemeManager.palette(darkTheme)
+
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(info.updateTitle)
+            .setMessage(info.updateMessage)
+            .setPositiveButton("Update") { _, _ ->
+                ExternalLinks.openUrl(this, info.updateUrl)
+            }
+            .setNegativeButton("Later") { _, _ ->
+                updateDismissedThisSession = true
+            }
+            .setCancelable(!info.forceUpdate)
+            .create()
+
+        dialog.setOnShowListener {
+            val updateBtn = dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)
+            val laterBtn = dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_NEGATIVE)
+            updateBtn.setTextColor(palette.primaryText)
+            laterBtn.setTextColor(palette.secondaryText)
+        }
+        dialog.show()
+        dialog.window?.setBackgroundDrawable(ColorDrawable(palette.cardBackground))
+    }
+
+    private fun showTelegramCommunityDialog() {
+        val darkTheme = isDarkTheme()
+        val palette = ThemeManager.palette(darkTheme)
+
+        val dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_telegram, null)
+        val telegramTitle = dialogView.findViewById<TextView>(R.id.telegramTitle)
+        val telegramMessage = dialogView.findViewById<TextView>(R.id.telegramMessage)
+        val dontShowAgainCheckbox = dialogView.findViewById<CheckBox>(R.id.dontShowAgainCheckbox)
+
+        telegramTitle.setTextColor(palette.primaryText)
+        telegramMessage.setTextColor(palette.secondaryText)
+        dontShowAgainCheckbox.setTextColor(palette.primaryText)
+        dontShowAgainCheckbox.buttonTintList = android.content.res.ColorStateList.valueOf(palette.primaryText)
+
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setView(dialogView)
+            .setPositiveButton("Join") { _, _ ->
+                preferences.setCommunityDialogDismissed(true)
+                ExternalLinks.openUrl(this, AppLinks.TELEGRAM_URL)
+            }
+            .setNegativeButton("Cancel") { _, _ ->
+                if (dontShowAgainCheckbox.isChecked) {
+                    preferences.setCommunityDialogDismissed(true)
+                }
+            }
+            .create()
+
+        dialog.setOnShowListener {
+            val joinBtn = dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)
+            val cancelBtn = dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_NEGATIVE)
+            joinBtn.setTextColor(palette.primaryText)
+            cancelBtn.setTextColor(palette.secondaryText)
+        }
+        dialog.show()
+        dialog.window?.setBackgroundDrawable(ColorDrawable(palette.cardBackground))
+    }
+
     private fun showTab(itemId: Int, logSwitch: Boolean) {
         val tab = tabForItemId(itemId) ?: return
         if (itemId == selectedItemId && overlayFragment == null) return
@@ -522,6 +726,8 @@ class MainActivity : AppCompatActivity() {
         themeButton.setImageResource(
             if (darkTheme) R.drawable.ic_khobor_sun_24 else R.drawable.ic_khobor_moon_24
         )
+        val showAdd = selectedItemId == R.id.nav_sources && overlayFragment == null
+        addSourceButton.visibility = if (showAdd) View.VISIBLE else View.GONE
         applyNativeColors(darkTheme)
     }
 

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <TextView
+        android:id="@+id/telegramTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Join The Open Atlas"
+        android:textColor="@color/khobor_text"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp" />
+
+    <TextView
+        android:id="@+id/telegramMessage"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Get Khoborakhobor updates, release notes, and community news."
+        android:textColor="@color/khobor_text_muted"
+        android:textSize="14sp"
+        android:layout_marginBottom="16dp" />
+
+    <CheckBox
+        android:id="@+id/dontShowAgainCheckbox"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Don't show again"
+        android:textColor="@color/khobor_text"
+        android:textSize="14sp" />
+
+</LinearLayout>

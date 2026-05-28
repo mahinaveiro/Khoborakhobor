@@ -12,10 +12,21 @@ android {
         applicationId = "mahin.studio.khoborakhobor"
         minSdk = 27
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include(
+                "arm64-v8a"
+            )
+            isUniversalApk = false
+        }
     }
 
     buildTypes {
@@ -35,11 +46,22 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     androidResources {
         // uBlock Origin requires assets/ublock/_locales. Android's default ignore pattern skips underscore asset dirs.
         ignoreAssetsPattern = "!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini:!*~"
+    }
+
+    packaging {
+        resources {
+            excludes += "**/placeholder*"
+            excludes += "**/debug/*"
+            excludes += "**/test/*"
+            excludes += "**/*.log"
+            excludes += "**/temp/*"
+        }
     }
 }
 
@@ -56,9 +78,6 @@ composeCompiler {
 dependencies {
 
     implementation("androidx.appcompat:appcompat:1.7.0")
-    implementation("androidx.fragment:fragment-ktx:1.8.5")
-    implementation("androidx.recyclerview:recyclerview:1.3.2")
-    implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.constraintlayout:constraintlayout:2.2.0")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

@@ -56,17 +56,38 @@
         android:textColor="@color/khobor_text_muted"
         android:textSize="12sp" />
 
-    <TextView
-        android:id="@+id/favoriteButton"
-        android:layout_width="78dp"
-        android:layout_height="34dp"
-        android:layout_gravity="start"
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:clickable="true"
-        android:focusable="true"
-        android:foreground="?attr/selectableItemBackground"
-        android:gravity="center"
-        android:textColor="@color/khobor_text"
-        android:textSize="13sp"
-        android:textStyle="bold" />
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/favoriteButton"
+            android:layout_width="78dp"
+            android:layout_height="34dp"
+            android:clickable="true"
+            android:focusable="true"
+            android:foreground="?attr/selectableItemBackground"
+            android:gravity="center"
+            android:textColor="@color/khobor_text"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <ImageButton
+            android:id="@+id/deleteButton"
+            android:layout_width="34dp"
+            android:layout_height="34dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Delete custom source"
+            android:padding="6dp"
+            android:src="@drawable/ic_khobor_delete_24"
+            android:visibility="gone" />
+    </LinearLayout>
 </LinearLayout>

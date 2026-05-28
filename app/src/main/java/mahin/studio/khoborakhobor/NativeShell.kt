@@ -162,6 +162,7 @@ internal abstract class SourceRecyclerFragment : Fragment(R.layout.fragment_recy
             iconCacheManager = (requireActivity() as MainActivity).sourceIconCacheManager,
             onOpenSource = { (requireActivity() as MainActivity).onOpenSource(it) },
             onToggleFavorite = { (requireActivity() as MainActivity).onToggleFavorite(it) },
+            onDeleteCustomSource = { (requireActivity() as MainActivity).onDeleteCustomSource(it) },
             onCategorySelected = {
                 selectedCategory = it
                 (requireActivity() as MainActivity).setJankState("selectedCategory", it)
@@ -286,6 +287,11 @@ internal class SettingsNativeFragment : Fragment(R.layout.fragment_settings), Na
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         scrollRoot = view.findViewById(R.id.settingsScroll)
         container = view.findViewById(R.id.settingsContainer)
+        val helpButton = view.findViewById<ImageButton>(R.id.helpButton)
+        helpButton.setOnClickListener {
+            ExternalLinks.openUrl(requireContext(), AppLinks.FAQ_URL)
+        }
+        createdViews["helpButton"] = helpButton
     }
 
     override fun render(state: AppUiState, darkTheme: Boolean) {
@@ -330,6 +336,63 @@ internal class SettingsNativeFragment : Fragment(R.layout.fragment_settings), Na
                 }
             })
         }
+        addPanel("Support & community").also { panel ->
+            panel.addView(settingsLinkRow("Buy me a coffee", R.drawable.ic_khobor_favorite_24, AppLinks.BUY_ME_COFFEE_URL, "coffee"))
+            panel.addView(settingsDivider())
+            panel.addView(settingsLinkRow("Telegram Community", R.drawable.ic_khobor_sources_24, AppLinks.TELEGRAM_URL, "telegram"))
+            panel.addView(settingsDivider())
+            panel.addView(settingsLinkRow("Star on GitHub", R.drawable.ic_khobor_favorite_24, AppLinks.GITHUB_URL, "github"))
+            panel.addView(settingsDivider())
+            panel.addView(settingsLinkRow("Terms & Conditions", R.drawable.ic_khobor_archive_24, AppLinks.TERMS_URL, "terms"))
+            panel.addView(settingsDivider())
+            panel.addView(settingsLinkRow("FAQ / Guides", R.drawable.ic_khobor_help_24, AppLinks.FAQ_URL, "faq"))
+        }
+    }
+
+    private fun settingsLinkRow(
+        title: String,
+        iconRes: Int,
+        url: String,
+        key: String
+    ): View {
+        val row = LinearLayout(requireContext()).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            minimumHeight = dp(48)
+            setPadding(0, dp(6), 0, dp(6))
+            setOnClickListener {
+                ExternalLinks.openUrl(requireContext(), url)
+            }
+            applySelectableForeground()
+        }
+        val iconView = ImageView(requireContext()).apply {
+            setImageResource(iconRes)
+            layoutParams = LinearLayout.LayoutParams(dp(20), dp(20)).apply {
+                marginEnd = dp(12)
+            }
+        }
+        val label = TextView(requireContext()).apply {
+            text = title
+            textSize = 14f
+            includeFontPadding = false
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val arrow = TextView(requireContext()).apply {
+            text = "↗"
+            textSize = 14f
+            includeFontPadding = false
+            gravity = android.view.Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        row.addView(iconView)
+        row.addView(label)
+        row.addView(arrow)
+
+        createdViews["$key-icon"] = iconView
+        createdViews["$key-label"] = label
+        createdViews["$key-arrow"] = arrow
+
+        return row
     }
 
     private fun addPanel(title: String): LinearLayout {
@@ -495,6 +558,17 @@ internal class SettingsNativeFragment : Fragment(R.layout.fragment_settings), Na
                 this.background = roundedDrawable(palette.outlinedButtonBg, palette.outlinedButtonBorder, dp(14))
                 setTextColor(palette.outlinedButtonText)
             }
+        }
+        val linkKeys = listOf("coffee", "telegram", "github", "terms", "faq")
+        linkKeys.forEach { key ->
+            (createdViews["$key-icon"] as? ImageView)?.imageTintList = ColorStateList.valueOf(palette.secondaryText)
+            (createdViews["$key-label"] as? TextView)?.setTextColor(palette.primaryText)
+            (createdViews["$key-arrow"] as? TextView)?.setTextColor(palette.secondaryText)
+        }
+        val helpButton = createdViews["helpButton"] as? ImageButton
+        if (helpButton != null) {
+            helpButton.background = roundedDrawable(palette.cardBackground, palette.cardBorder, dp(20))
+            helpButton.imageTintList = ColorStateList.valueOf(palette.secondaryText)
         }
         applySwitchColors(createdViews["disableAds"] as SwitchMaterial, darkTheme)
         applySwitchColors(createdViews["websiteDark"] as SwitchMaterial, darkTheme)
@@ -663,6 +737,7 @@ private class SourceListAdapter(
     private val iconCacheManager: SourceIconCacheManager,
     private val onOpenSource: (NewsSource) -> Unit,
     private val onToggleFavorite: (NewsSource) -> Unit,
+    private val onDeleteCustomSource: (NewsSource) -> Unit,
     private val onCategorySelected: (String) -> Unit,
     private val onSearchChanged: (String) -> Unit,
     private val darkThemeProvider: () -> Boolean
@@ -692,6 +767,7 @@ private class SourceListAdapter(
                 iconCacheManager,
                 onOpenSource,
                 onToggleFavorite,
+                onDeleteCustomSource,
                 darkThemeProvider
             )
             else -> EmptyHolder(inflater.inflate(R.layout.item_empty_state, parent, false), darkThemeProvider)
@@ -844,6 +920,7 @@ private class SourceCardHolder(
     private val iconCacheManager: SourceIconCacheManager,
     private val onOpenSource: (NewsSource) -> Unit,
     private val onToggleFavorite: (NewsSource) -> Unit,
+    private val onDeleteCustomSource: (NewsSource) -> Unit,
     private val darkThemeProvider: () -> Boolean
 ) : RecyclerView.ViewHolder(view) {
     private val root: LinearLayout = view.findViewById(R.id.sourceCardRoot)
@@ -852,6 +929,7 @@ private class SourceCardHolder(
     private val name: TextView = view.findViewById(R.id.sourceName)
     private val meta: TextView = view.findViewById(R.id.sourceMeta)
     private val favorite: TextView = view.findViewById(R.id.favoriteButton)
+    private val deleteButton: ImageButton = view.findViewById(R.id.deleteButton)
 
     fun bind(item: SourceListItem.SourceCard, iconOnly: Boolean) {
         val source = item.source
@@ -862,11 +940,13 @@ private class SourceCardHolder(
                 name = name,
                 meta = meta,
                 favorite = favorite,
+                deleteButton = deleteButton,
                 source = source,
                 isSaved = item.isFavorite,
                 palette = nativePalette(darkThemeProvider()),
                 onOpenSource = onOpenSource,
                 onToggleFavorite = onToggleFavorite,
+                onDeleteCustomSource = onDeleteCustomSource,
                 radius = dp(16),
                 iconRadius = dp(11),
                 buttonRadius = dp(17)
@@ -891,11 +971,13 @@ private fun bindSourceCard(
     name: TextView,
     meta: TextView,
     favorite: TextView,
+    deleteButton: ImageButton,
     source: NewsSource,
     isSaved: Boolean,
     palette: ThemePalette,
     onOpenSource: (NewsSource) -> Unit,
     onToggleFavorite: (NewsSource) -> Unit,
+    onDeleteCustomSource: (NewsSource) -> Unit,
     radius: Int,
     iconRadius: Int,
     buttonRadius: Int
@@ -917,6 +999,14 @@ private fun bindSourceCard(
     )
     favorite.setTextColor(if (isSaved) palette.buttonText else palette.outlinedButtonText)
     favorite.setOnClickListener { onToggleFavorite(source) }
+
+    if (source.isCustom) {
+        deleteButton.visibility = View.VISIBLE
+        deleteButton.imageTintList = android.content.res.ColorStateList.valueOf(palette.secondaryText)
+        deleteButton.setOnClickListener { onDeleteCustomSource(source) }
+    } else {
+        deleteButton.visibility = View.GONE
+    }
 }
 
 private class EmptyHolder(view: View, private val darkThemeProvider: () -> Boolean) : RecyclerView.ViewHolder(view) {

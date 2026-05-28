@@ -39,6 +39,16 @@
             android:textStyle="bold" />
 
         <ImageButton
+            android:id="@+id/addSourceButton"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Add custom source"
+            android:padding="9dp"
+            android:src="@drawable/ic_khobor_plus_24"
+            android:visibility="gone" />
+
+        <ImageButton
             android:id="@+id/themeButton"
             android:layout_width="40dp"
             android:layout_height="40dp"
