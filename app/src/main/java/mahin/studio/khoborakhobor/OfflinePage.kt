@@ -9,15 +9,22 @@ data class OfflinePage(
     val sourceName: String,
     val sourceId: String,
     val sourceUrl: String,
-    val originalPageUrl: String,
-    val iconUrl: String,
+    val originalUrl: String,
     val savedAt: Long,
+    val iconUrl: String,
+    val rawHtmlPath: String,
+    val cleanHtmlPath: String? = null
+) {
+    val originalPageUrl: String
+        get() = originalUrl
+
     val localHtmlPath: String
-)
+        get() = rawHtmlPath
+}
 
 data class PageSnapshot(
     val title: String,
     val url: String,
-    val html: String,
+    val rawHtml: String,
     val savedAt: Long
 )

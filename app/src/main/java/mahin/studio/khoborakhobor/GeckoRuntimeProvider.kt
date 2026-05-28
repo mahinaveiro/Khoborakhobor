@@ -1,7 +1,6 @@
 package mahin.studio.khoborakhobor
 
 import android.content.Context
-import android.util.Log
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoRuntimeSettings
 
@@ -11,18 +10,19 @@ object GeckoRuntimeProvider {
 
     fun get(context: Context, disableAds: Boolean): GeckoRuntime {
         return runtime ?: synchronized(this) {
-            runtime ?: GeckoRuntime.create(
-                context.applicationContext,
-                GeckoRuntimeSettings.Builder()
-                    .extensionsWebAPIEnabled(true)
-                    .contentBlocking(GeckoPrivacyBlocker.contentBlockingSettings(disableAds))
-                    .build()
-            ).also {
+            runtime ?: PerformanceLogger.trace("GeckoRuntime init") {
+                GeckoRuntime.create(
+                    context.applicationContext,
+                    GeckoRuntimeSettings.Builder()
+                        .extensionsWebAPIEnabled(true)
+                        .contentBlocking(GeckoPrivacyBlocker.contentBlockingSettings(disableAds))
+                        .build()
+                )
+            }.also {
                 runtime = it
-                Log.i(TAG, "GeckoRuntime created")
             }
         }
     }
 
-    private const val TAG = "GeckoRuntimeProvider"
+    fun isCreated(): Boolean = runtime != null
 }

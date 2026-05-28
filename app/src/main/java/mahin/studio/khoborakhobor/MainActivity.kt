@@ -5,7 +5,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.provider.Settings
+import android.os.SystemClock
 import android.util.Log
 import android.widget.Toast
 import androidx.annotation.DrawableRes
@@ -13,9 +13,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -81,24 +79,25 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import coil.compose.AsyncImage
-import coil.request.CachePolicy
-import coil.request.ImageRequest
+import coil3.compose.AsyncImage
+import coil3.request.CachePolicy
+import coil3.request.ImageRequest
+import coil3.request.crossfade
 import mahin.studio.khoborakhobor.ui.theme.KhoborakhoborTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -115,37 +114,46 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 private const val APP_TAG = "Khoborakhobor"
 // TODO: Compose debug builds add runtime overhead; validate performance on a minified release build.
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        val appStartMillis = SystemClock.elapsedRealtime()
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        if (!GeckoRuntimeProvider.isCreated()) {
+            PerformanceLogger.mark("GeckoRuntime not created during app startup")
+        }
 
+        val jankTracker = AppJankTracker(window)
         val preferences = AppPreferences(applicationContext)
         val offlineRepository = OfflinePageRepository(applicationContext)
-        val readerRepository = ReaderPageRepository(applicationContext)
-        val initialDisableAds = preferences.loadDisableAds()
+        val readerRepository = lazy(LazyThreadSafetyMode.NONE) {
+            ReaderPageRepository(applicationContext)
+        }
 
         setContent {
+            DisposableEffect(Unit) {
+                onDispose { jankTracker.stop() }
+            }
+
             val controllerStore = remember { RuntimeControllerStore() }
             val appScope = rememberCoroutineScope()
-            val mainHandler = remember { Handler(Looper.getMainLooper()) }
             var sourceCatalog by remember { mutableStateOf<List<NewsSource>>(emptyList()) }
-            var themePreference by remember { mutableStateOf(preferences.loadThemePreference()) }
-            var favoriteIds by remember { mutableStateOf(preferences.loadFavoriteIds()) }
-            var disableAds by remember { mutableStateOf(initialDisableAds) }
-            var websiteDarkMode by remember { mutableStateOf(preferences.loadWebsiteDarkMode()) }
+            var themePreference by remember { mutableStateOf(ThemePreference.System) }
+            var favoriteIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+            var disableAds by remember { mutableStateOf(false) }
+            var websiteDarkMode by remember { mutableStateOf(false) }
             var offlinePages by remember { mutableStateOf<List<OfflinePage>>(emptyList()) }
-            var showIntro by rememberSaveable { mutableStateOf(true) }
             var adBlockState by remember {
                 mutableStateOf(
                     AdBlockState(
-                        enabled = initialDisableAds,
-                        status = if (initialDisableAds) UBlockStatus.LOADING else UBlockStatus.DISABLED
+                        enabled = false,
+                        status = UBlockStatus.DISABLED
                     )
                 )
             }
@@ -157,12 +165,42 @@ class MainActivity : ComponentActivity() {
             }
 
             LaunchedEffect(Unit) {
+                PerformanceLogger.logDuration("AppStart first composition", appStartMillis)
+            }
+
+            LaunchedEffect(Unit) {
+                withFrameNanos { }
+                val loadedPreferences = withContext(Dispatchers.IO) {
+                    LoadedPreferences(
+                        themePreference = preferences.loadThemePreference(),
+                        favoriteIds = preferences.loadFavoriteIds(),
+                        disableAds = preferences.loadDisableAds(),
+                        websiteReaderDarkModeEnabled = preferences.loadWebsiteDarkMode()
+                    )
+                }
+                themePreference = loadedPreferences.themePreference
+                favoriteIds = loadedPreferences.favoriteIds
+                disableAds = loadedPreferences.disableAds
+                websiteDarkMode = loadedPreferences.websiteReaderDarkModeEnabled
+                adBlockState = AdBlockState(
+                    enabled = loadedPreferences.disableAds,
+                    status = if (loadedPreferences.disableAds) {
+                        UBlockStatus.LOADING
+                    } else {
+                        UBlockStatus.DISABLED
+                    }
+                )
+            }
+
+            LaunchedEffect(Unit) {
+                withFrameNanos { }
                 sourceCatalog = withContext(Dispatchers.IO) {
                     NewsSourceRepository.load(applicationContext)
                 }
             }
 
             LaunchedEffect(Unit) {
+                withFrameNanos { }
                 offlinePages = withContext(Dispatchers.IO) {
                     offlineRepository.loadPages()
                 }
@@ -172,20 +210,23 @@ class MainActivity : ComponentActivity() {
                 controllerStore.adBlockController?.let { return it }
                 return AdBlockController(applicationContext, runtime).also { controller ->
                     controllerStore.adBlockController = controller
-                    controller.start(preferences.loadDisableAds()) { adBlockState = it }
+                    controller.start(disableAds) { adBlockState = it }
                 }
             }
 
             fun runtimeWithExtensions(): GeckoRuntime {
-                val runtime = GeckoRuntimeProvider.get(applicationContext, preferences.loadDisableAds())
-                if (preferences.loadDisableAds()) {
+                val runtime = GeckoRuntimeProvider.get(applicationContext, disableAds)
+                jankTracker.setState("isGeckoRuntimeInitialized", GeckoRuntimeProvider.isCreated().toString())
+                if (disableAds) {
                     ensureAdBlockController(runtime)
                 }
                 return runtime
             }
 
             fun runtimeOnly(): GeckoRuntime {
-                return GeckoRuntimeProvider.get(applicationContext, preferences.loadDisableAds())
+                val runtime = GeckoRuntimeProvider.get(applicationContext, disableAds)
+                jankTracker.setState("isGeckoRuntimeInitialized", GeckoRuntimeProvider.isCreated().toString())
+                return runtime
             }
 
             DisposableEffect(disableAds) {
@@ -250,17 +291,24 @@ class MainActivity : ComponentActivity() {
                             websiteDarkMode = enabled
                             preferences.saveWebsiteDarkMode(enabled)
                         },
-                        onBuildDarkReaderPage = { source, url ->
+                        onBuildReaderPage = { source, url, darkMode ->
                             withContext(Dispatchers.IO) {
-                                readerRepository.buildDarkReaderPage(url, source)
+                                readerRepository.value.buildReaderPage(url, source, darkMode)
+                            }
+                        },
+                        onBuildOfflineReaderPage = { page, darkMode ->
+                            withContext(Dispatchers.IO) {
+                                readerRepository.value.buildOfflineReaderPage(page, darkMode)
                             }
                         },
                         onSaveOfflinePage = { source, url ->
                             val result = withContext(Dispatchers.IO) {
-                                readerRepository.buildOfflineSnapshot(url, source).fold(
-                                    onSuccess = { snapshot -> offlineRepository.savePage(source, snapshot) },
-                                    onFailure = { error -> Result.failure(error) }
-                                )
+                                PerformanceLogger.trace("saveOfflinePage") {
+                                    readerRepository.value.fetchPageSnapshot(url, source).fold(
+                                        onSuccess = { snapshot -> offlineRepository.savePage(source, snapshot) },
+                                        onFailure = { error -> Result.failure(error) }
+                                    )
+                                }
                             }
                             if (result.isSuccess) {
                                 offlinePages = withContext(Dispatchers.IO) {
@@ -286,14 +334,9 @@ class MainActivity : ComponentActivity() {
                         },
                         onClearCache = { onResult ->
                             clearGeckoCache(runtimeWithExtensions(), onResult)
-                        }
+                        },
+                        onJankStateChange = { key, value -> jankTracker.setState(key, value) }
                     )
-                    if (showIntro) {
-                        IntroOverlay(
-                            reduceMotion = isReduceMotionEnabled(),
-                            onFinished = { showIntro = false }
-                        )
-                    }
                 }
             }
         }
@@ -304,123 +347,23 @@ private class RuntimeControllerStore {
     var adBlockController: AdBlockController? = null
 }
 
-@Composable
-private fun IntroOverlay(
-    reduceMotion: Boolean,
-    onFinished: () -> Unit
-) {
-    val alpha = remember { Animatable(0f) }
-    val scale = remember { Animatable(if (reduceMotion) 1f else 0.97f) }
-    val textAlpha = remember { Animatable(0f) }
-
-    LaunchedEffect(reduceMotion) {
-        if (reduceMotion) {
-            onFinished()
-            return@LaunchedEffect
-        }
-
-        launch {
-            scale.animateTo(
-                targetValue = 1f,
-                animationSpec = tween(durationMillis = 520, easing = FastOutSlowInEasing)
-            )
-        }
-        alpha.animateTo(
-            targetValue = 1f,
-            animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing)
-        )
-        launch {
-            textAlpha.animateTo(
-                targetValue = 1f,
-                animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing)
-            )
-        }
-        delay(520L)
-        alpha.animateTo(
-            targetValue = 0f,
-            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing)
-        )
-        onFinished()
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .alpha(alpha.value)
-            .background(Color(0xFF050505)),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            modifier = Modifier.scale(scale.value),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            KhoborMarkImage(
-                modifier = Modifier.size(104.dp),
-                requestSizePx = 512
-            )
-            Column(
-                modifier = Modifier.alpha(textAlpha.value),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Text(
-                    text = "Khoborakhobor",
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "News, cleaned.",
-                    color = Color(0xFFCFCFCF),
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-    }
-}
+private data class LoadedPreferences(
+    val themePreference: ThemePreference,
+    val favoriteIds: Set<String>,
+    val disableAds: Boolean,
+    val websiteReaderDarkModeEnabled: Boolean
+)
 
 @Composable
-private fun KhoborMarkImage(
-    modifier: Modifier,
-    requestSizePx: Int = 384
-) {
-    val context = LocalContext.current
-    val imageRequest = remember(context, requestSizePx) {
-        ImageRequest.Builder(context)
-            .data(R.drawable.khobor_mark)
-            .size(requestSizePx, requestSizePx)
-            .memoryCacheKey("khobor-mark-$requestSizePx")
-            .diskCacheKey("khobor-mark-$requestSizePx")
-            .memoryCachePolicy(CachePolicy.ENABLED)
-            .diskCachePolicy(CachePolicy.ENABLED)
-            .crossfade(false)
-            .build()
-    }
-
-    AsyncImage(
-        model = imageRequest,
-        contentDescription = null,
-        modifier = modifier,
+private fun AppMark(modifier: Modifier = Modifier) {
+    Image(
+        painter = painterResource(id = R.drawable.khobor_mark_topbar),
+        contentDescription = "Khoborakhobor",
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant),
         contentScale = ContentScale.Fit
     )
-}
-
-@Composable
-private fun isReduceMotionEnabled(): Boolean {
-    val context = LocalContext.current
-    return remember {
-        runCatching {
-            Settings.Global.getFloat(
-                context.contentResolver,
-                Settings.Global.ANIMATOR_DURATION_SCALE,
-                1f
-            ) == 0f
-        }.getOrDefault(false)
-    }
 }
 
 private fun clearGeckoCache(
@@ -471,14 +414,17 @@ private fun KhoborakhoborApp(
     onThemePreferenceChange: (ThemePreference) -> Unit,
     onDisableAdsChange: (Boolean) -> Unit,
     onWebsiteDarkModeChange: (Boolean) -> Unit,
-    onBuildDarkReaderPage: suspend (NewsSource, String) -> Result<ReaderPage>,
+    onBuildReaderPage: suspend (NewsSource, String, Boolean) -> Result<ReaderPage>,
+    onBuildOfflineReaderPage: suspend (OfflinePage, Boolean) -> Result<ReaderPage>,
     onSaveOfflinePage: suspend (NewsSource, String) -> Result<OfflinePage>,
     onDeleteOfflinePage: (OfflinePage) -> Unit,
-    onClearCache: ((Boolean) -> Unit) -> Unit
+    onClearCache: ((Boolean) -> Unit) -> Unit,
+    onJankStateChange: (String, String) -> Unit
 ) {
-    var selectedTab by rememberSaveable { mutableStateOf(AppTab.Home) }
-    var selectedSourceId by rememberSaveable { mutableStateOf<String?>(null) }
-    var selectedOfflinePageId by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedTab by remember { mutableStateOf(AppTab.Home) }
+    var selectedSourceId by remember { mutableStateOf<String?>(null) }
+    var selectedOfflinePageId by remember { mutableStateOf<String?>(null) }
+    var pendingTabSwitchStart by remember { mutableStateOf<Pair<AppTab, Long>?>(null) }
     val selectedSource = remember(sources, selectedSourceId) {
         sources.firstOrNull { it.id == selectedSourceId }
     }
@@ -489,12 +435,37 @@ private fun KhoborakhoborApp(
     val favoriteSources by remember(sources, favoriteIds) {
         derivedStateOf { sources.filter { it.id in favoriteIds } }
     }
+    val currentScreen = when {
+        selectedSource != null -> "Browser"
+        selectedOfflinePage != null -> "Reader"
+        else -> selectedTab.label
+    }
+
+    LaunchedEffect(currentScreen, selectedTab, sources.size, offlinePages.size) {
+        onJankStateChange("currentScreen", currentScreen)
+        onJankStateChange("selectedTab", selectedTab.label)
+        onJankStateChange("isBrowserVisible", (selectedSource != null).toString())
+        onJankStateChange("isGeckoRuntimeInitialized", GeckoRuntimeProvider.isCreated().toString())
+        if (selectedSource == null) {
+            onJankStateChange("isGeneratingReader", "false")
+            onJankStateChange("isSavingOffline", "false")
+        }
+        PerformanceLogger.mark(
+            "Diagnostics sourceCount=${sources.size} offlineCount=${offlinePages.size} " +
+                "geckoInitialized=${GeckoRuntimeProvider.isCreated()} currentScreen=$currentScreen " +
+                "lastJank=${AppJankTracker.lastJankEvent} lastSlow=${PerformanceLogger.lastOperation}"
+        )
+    }
 
     selectedOfflinePage?.let { page ->
         OfflineReaderScreen(
             page = page,
             getGeckoRuntime = getOfflineGeckoRuntime,
-            onClose = { selectedOfflinePageId = null }
+            readerDarkMode = websiteDarkMode,
+            onReaderDarkModeChange = onWebsiteDarkModeChange,
+            onBuildOfflineReaderPage = onBuildOfflineReaderPage,
+            onClose = { selectedOfflinePageId = null },
+            onJankStateChange = onJankStateChange
         )
         return
     }
@@ -506,13 +477,14 @@ private fun KhoborakhoborApp(
             getGeckoRuntime = getGeckoRuntime,
             websiteDarkMode = websiteDarkMode,
             onWebsiteDarkModeChange = onWebsiteDarkModeChange,
-            onBuildDarkReaderPage = onBuildDarkReaderPage,
+            onBuildReaderPage = onBuildReaderPage,
             onSaveOfflinePage = onSaveOfflinePage,
             onClose = { selectedSourceId = null },
             onHome = {
                 selectedSourceId = null
                 selectedTab = AppTab.Home
-            }
+            },
+            onJankStateChange = onJankStateChange
         )
         return
     }
@@ -533,7 +505,12 @@ private fun KhoborakhoborApp(
         bottomBar = {
             AppBottomNavigation(
                 selectedTab = selectedTab,
-                onTabSelected = { selectedTab = it }
+                onTabSelected = { tab ->
+                    if (tab != selectedTab) {
+                        pendingTabSwitchStart = tab to SystemClock.elapsedRealtime()
+                        selectedTab = tab
+                    }
+                }
             )
         },
         containerColor = MaterialTheme.colorScheme.background
@@ -547,6 +524,7 @@ private fun KhoborakhoborApp(
                     adBlockState = adBlockState,
                     onOpenSource = { selectedSourceId = it.id },
                     onToggleFavorite = onToggleFavorite,
+                    onJankStateChange = onJankStateChange,
                     modifier = Modifier.padding(innerPadding)
                 )
 
@@ -555,6 +533,7 @@ private fun KhoborakhoborApp(
                     favoriteIds = favoriteIds,
                     onOpenSource = { selectedSourceId = it.id },
                     onToggleFavorite = onToggleFavorite,
+                    onJankStateChange = onJankStateChange,
                     modifier = Modifier.padding(innerPadding)
                 )
 
@@ -572,6 +551,7 @@ private fun KhoborakhoborApp(
                     emptyText = "Favorite sources will appear here.",
                     onOpenSource = { selectedSourceId = it.id },
                     onToggleFavorite = onToggleFavorite,
+                    onJankStateChange = onJankStateChange,
                     modifier = Modifier.padding(innerPadding)
                 )
 
@@ -587,6 +567,14 @@ private fun KhoborakhoborApp(
                     modifier = Modifier.padding(innerPadding)
                 )
             }
+        }
+    }
+
+    LaunchedEffect(selectedTab) {
+        val pending = pendingTabSwitchStart
+        if (pending?.first == selectedTab) {
+            PerformanceLogger.logDuration("Tab switch ${selectedTab.label}", pending.second)
+            pendingTabSwitchStart = null
         }
     }
 }
@@ -611,10 +599,7 @@ private fun AppTopBar(
                 .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            KhoborMarkImage(
-                modifier = Modifier.size(46.dp),
-                requestSizePx = 192
-            )
+            AppMark(modifier = Modifier.size(38.dp))
             Text(
                 text = title,
                 modifier = Modifier
@@ -735,9 +720,11 @@ private fun HomeScreen(
     adBlockState: AdBlockState,
     onOpenSource: (NewsSource) -> Unit,
     onToggleFavorite: (NewsSource) -> Unit,
+    onJankStateChange: (String, String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var selectedCategory by rememberSaveable { mutableStateOf<String?>(null) }
+    var firstCompositionLogged by rememberSaveable { mutableStateOf(false) }
     val gridState = rememberLazyGridState()
     val homeCategories = remember { HomeCategories }
     val popularSources by remember(sources) {
@@ -759,6 +746,30 @@ private fun HomeScreen(
     val liveSources by remember(sources, featuredSourceIds) {
         derivedStateOf { sources.filter { (it.category == "Live" || it.type == "tv") && it.id !in featuredSourceIds } }
     }
+    val displayedSources = remember(popularSources, englishSources, liveSources) {
+        popularSources + englishSources + liveSources
+    }
+    val loadSourceIcons = rememberDeferredSourceIcons(
+        screenKey = "Home",
+        itemCount = displayedSources.size
+    )
+
+    LaunchedEffect(Unit) {
+        if (!firstCompositionLogged) {
+            firstCompositionLogged = true
+            PerformanceLogger.mark("Home first composition complete")
+        }
+    }
+    LaunchedEffect(selectedCategory) {
+        onJankStateChange("selectedCategory", selectedCategory ?: "All")
+    }
+    SourceIconLoadingTelemetry(
+        screenName = "Home",
+        sources = displayedSources,
+        enabled = loadSourceIcons,
+        onJankStateChange = onJankStateChange
+    )
+    GridCompositionTelemetry(label = "Home", itemCount = displayedSources.size)
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
@@ -809,6 +820,7 @@ private fun HomeScreen(
             SourceCard(
                 source = source,
                 isFavorite = source.id in favoriteIds,
+                loadIcon = loadSourceIcons,
                 onOpen = { onOpenSource(source) },
                 onToggleFavorite = { onToggleFavorite(source) },
                 modifier = Modifier
@@ -831,6 +843,7 @@ private fun HomeScreen(
             SourceCard(
                 source = source,
                 isFavorite = source.id in favoriteIds,
+                loadIcon = loadSourceIcons,
                 onOpen = { onOpenSource(source) },
                 onToggleFavorite = { onToggleFavorite(source) },
                 modifier = Modifier
@@ -853,6 +866,7 @@ private fun HomeScreen(
             SourceCard(
                 source = source,
                 isFavorite = source.id in favoriteIds,
+                loadIcon = loadSourceIcons,
                 onOpen = { onOpenSource(source) },
                 onToggleFavorite = { onToggleFavorite(source) },
                 modifier = Modifier
@@ -923,6 +937,7 @@ private fun SourcesScreen(
     favoriteIds: Set<String>,
     onOpenSource: (NewsSource) -> Unit,
     onToggleFavorite: (NewsSource) -> Unit,
+    onJankStateChange: (String, String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var query by rememberSaveable { mutableStateOf("") }
@@ -941,6 +956,20 @@ private fun SourcesScreen(
             }
         }
     }
+    val loadSourceIcons = rememberDeferredSourceIcons(
+        screenKey = "Sources-$selectedCategory-${query.trim()}",
+        itemCount = filteredSources.size
+    )
+    LaunchedEffect(selectedCategory) {
+        onJankStateChange("selectedCategory", selectedCategory)
+    }
+    SourceIconLoadingTelemetry(
+        screenName = "Sources",
+        sources = filteredSources,
+        enabled = loadSourceIcons,
+        onJankStateChange = onJankStateChange
+    )
+    GridCompositionTelemetry(label = "Sources", itemCount = filteredSources.size)
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
@@ -990,6 +1019,7 @@ private fun SourcesScreen(
                 SourceCard(
                     source = source,
                     isFavorite = source.id in favoriteIds,
+                    loadIcon = loadSourceIcons,
                     onOpen = { onOpenSource(source) },
                     onToggleFavorite = { onToggleFavorite(source) },
                     modifier = Modifier
@@ -1009,6 +1039,7 @@ private fun SourceCollectionScreen(
     emptyText: String,
     onOpenSource: (NewsSource) -> Unit,
     onToggleFavorite: (NewsSource) -> Unit,
+    onJankStateChange: (String, String) -> Unit,
     showCategoryFilter: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -1026,6 +1057,20 @@ private fun SourceCollectionScreen(
             }
         }
     }
+    val loadSourceIcons = rememberDeferredSourceIcons(
+        screenKey = "$title-$selectedCategory",
+        itemCount = visibleSources.size
+    )
+    LaunchedEffect(selectedCategory) {
+        onJankStateChange("selectedCategory", selectedCategory)
+    }
+    SourceIconLoadingTelemetry(
+        screenName = title,
+        sources = visibleSources,
+        enabled = loadSourceIcons,
+        onJankStateChange = onJankStateChange
+    )
+    GridCompositionTelemetry(label = title, itemCount = visibleSources.size)
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(2),
@@ -1067,6 +1112,7 @@ private fun SourceCollectionScreen(
                 SourceCard(
                     source = source,
                     isFavorite = source.id in favoriteIds,
+                    loadIcon = loadSourceIcons,
                     onOpen = { onOpenSource(source) },
                     onToggleFavorite = { onToggleFavorite(source) },
                     modifier = Modifier
@@ -1326,7 +1372,7 @@ private fun SettingsScreen(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
-                    Text("Dark Reader Mode", style = MaterialTheme.typography.titleMedium)
+                    Text("Reader Dark Mode", style = MaterialTheme.typography.titleMedium)
                     Text(
                         text = if (websiteDarkMode) "On" else "Off",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1537,9 +1583,66 @@ private fun SourceSearchField(
 }
 
 @Composable
+private fun SourceIconLoadingTelemetry(
+    screenName: String,
+    sources: List<NewsSource>,
+    enabled: Boolean,
+    onJankStateChange: (String, String) -> Unit
+) {
+    val iconCount = remember(sources) {
+        sources.count { SourceIconResolver.iconUrl(it) != null }
+    }
+
+    LaunchedEffect(screenName, iconCount, enabled) {
+        if (!enabled || iconCount == 0) return@LaunchedEffect
+        val start = SystemClock.elapsedRealtime()
+        onJankStateChange("isLoadingIcons", "true")
+        PerformanceLogger.mark("Icon loading start $screenName count=$iconCount")
+        delay(1_200L)
+        PerformanceLogger.logDuration("Icon loading $screenName count=$iconCount", start)
+        onJankStateChange("isLoadingIcons", "false")
+    }
+}
+
+@Composable
+private fun rememberDeferredSourceIcons(
+    screenKey: Any,
+    itemCount: Int
+): Boolean {
+    var loadIcons by remember(screenKey, itemCount) { mutableStateOf(false) }
+
+    LaunchedEffect(screenKey, itemCount) {
+        loadIcons = false
+        if (itemCount <= 0) return@LaunchedEffect
+        withFrameNanos { }
+        delay(300L)
+        loadIcons = true
+    }
+
+    return loadIcons
+}
+
+@Composable
+private fun GridCompositionTelemetry(
+    label: String,
+    itemCount: Int
+) {
+    var logged by rememberSaveable(label) { mutableStateOf(false) }
+    LaunchedEffect(label, itemCount) {
+        if (!logged && itemCount > 0) {
+            val start = SystemClock.elapsedRealtime()
+            withFrameNanos { }
+            PerformanceLogger.logDuration("Card grid composition $label count=$itemCount", start)
+            logged = true
+        }
+    }
+}
+
+@Composable
 private fun SourceCard(
     source: NewsSource,
     isFavorite: Boolean,
+    loadIcon: Boolean,
     onOpen: () -> Unit,
     onToggleFavorite: () -> Unit,
     modifier: Modifier = Modifier
@@ -1563,7 +1666,7 @@ private fun SourceCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SourceLogo(source = source)
+                SourceLogo(source = source, loadIcon = loadIcon)
                 IconButton(
                     onClick = onToggleFavorite,
                     modifier = Modifier.size(30.dp)
@@ -1618,8 +1721,64 @@ private fun SourceCard(
 }
 
 @Composable
-private fun SourceLogo(source: NewsSource) {
-    InitialsLogo(initials = source.initials())
+private fun SourceLogo(
+    source: NewsSource,
+    loadIcon: Boolean
+) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    val iconSize = 36.dp
+    val iconSizePx = remember(density) {
+        with(density) { iconSize.roundToPx() }
+    }
+    val iconUrl = remember(source.iconUrl, source.url) {
+        SourceIconResolver.iconUrl(source)
+    }
+    var failed by remember(iconUrl) {
+        mutableStateOf(iconUrl == null || SourceIconFailureCache.contains(iconUrl))
+    }
+
+    Box(
+        modifier = Modifier.size(38.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        InitialsLogo(initials = SourceIconResolver.fallbackInitials(source))
+        val safeIconUrl = iconUrl
+        if (loadIcon && safeIconUrl != null && !failed) {
+            val request = remember(safeIconUrl, iconSizePx) {
+                ImageRequest.Builder(context)
+                    .data(safeIconUrl)
+                    .size(iconSizePx, iconSizePx)
+                    .memoryCachePolicy(CachePolicy.ENABLED)
+                    .diskCachePolicy(CachePolicy.ENABLED)
+                    .crossfade(false)
+                    .build()
+            }
+            AsyncImage(
+                model = request,
+                contentDescription = "${source.name} icon",
+                modifier = Modifier
+                    .size(iconSize)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surface),
+                contentScale = ContentScale.Fit,
+                onError = {
+                    SourceIconFailureCache.add(safeIconUrl)
+                    failed = true
+                }
+            )
+        }
+    }
+}
+
+private object SourceIconFailureCache {
+    private val failedUrls = ConcurrentHashMap.newKeySet<String>()
+
+    fun contains(url: String?): Boolean = url != null && failedUrls.contains(url)
+
+    fun add(url: String) {
+        failedUrls.add(url)
+    }
 }
 
 @Composable
@@ -1690,11 +1849,18 @@ private fun EmptyState(text: String) {
 private fun OfflineReaderScreen(
     page: OfflinePage,
     getGeckoRuntime: () -> GeckoRuntime,
-    onClose: () -> Unit
+    readerDarkMode: Boolean,
+    onReaderDarkModeChange: (Boolean) -> Unit,
+    onBuildOfflineReaderPage: suspend (OfflinePage, Boolean) -> Result<ReaderPage>,
+    onClose: () -> Unit,
+    onJankStateChange: (String, String) -> Unit
 ) {
-    val file = remember(page.localHtmlPath) { File(page.localHtmlPath) }
+    val rawFile = remember(page.rawHtmlPath) { File(page.rawHtmlPath) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
-    var isLoading by remember { mutableStateOf(file.exists()) }
+    var localReaderPath by remember(page.id) { mutableStateOf<String?>(null) }
+    var renderError by remember(page.id) { mutableStateOf(false) }
+    var readerBusy by remember(page.id) { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(rawFile.exists()) }
     var progress by remember { mutableFloatStateOf(0f) }
 
     fun onMain(block: () -> Unit) {
@@ -1707,7 +1873,7 @@ private fun OfflineReaderScreen(
 
     BackHandler(onBack = onClose)
 
-    if (!file.exists()) {
+    if (!rawFile.exists()) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -1716,6 +1882,8 @@ private fun OfflineReaderScreen(
             OfflineReaderTopBar(
                 title = page.title,
                 sourceName = page.sourceName,
+                readerDarkMode = readerDarkMode,
+                onThemeToggle = { onReaderDarkModeChange(!readerDarkMode) },
                 onBack = onClose
             )
             Box(
@@ -1773,10 +1941,32 @@ private fun OfflineReaderScreen(
                     }
                 }
             }
-            open(getGeckoRuntime())
-            Log.i(APP_TAG, "GeckoSession opened: offline-${page.id}")
-            loadUri(Uri.fromFile(file).toString())
+            PerformanceLogger.trace("openBrowser") {
+                open(getGeckoRuntime())
+            }
         }
+    }
+
+    LaunchedEffect(page.id, readerDarkMode) {
+        onJankStateChange("isGeneratingReader", "true")
+        readerBusy = true
+        isLoading = true
+        progress = 0.04f
+        val result = onBuildOfflineReaderPage(page, readerDarkMode)
+        onJankStateChange("isGeneratingReader", "false")
+        readerBusy = false
+        result.fold(
+            onSuccess = { readerPage ->
+                localReaderPath = readerPage.localHtmlPath
+                renderError = false
+                session.loadUri(Uri.fromFile(File(readerPage.localHtmlPath)).toString())
+            },
+            onFailure = {
+                renderError = true
+                isLoading = false
+                progress = 0f
+            }
+        )
     }
 
     DisposableEffect(session) {
@@ -1784,7 +1974,6 @@ private fun OfflineReaderScreen(
             session.navigationDelegate = null
             session.progressDelegate = null
             session.close()
-            Log.i(APP_TAG, "GeckoSession disposed: offline-${page.id}")
         }
     }
 
@@ -1796,22 +1985,52 @@ private fun OfflineReaderScreen(
         OfflineReaderTopBar(
             title = page.title,
             sourceName = page.sourceName,
+            readerDarkMode = readerDarkMode,
+            onThemeToggle = { onReaderDarkModeChange(!readerDarkMode) },
             onBack = onClose
         )
         BrowserProgressBar(
-            isLoading = isLoading,
+            isLoading = isLoading || readerBusy,
             progress = progress
         )
-        AndroidView(
-            factory = { viewContext ->
-                GeckoView(viewContext).apply {
-                    setSession(session)
+        when {
+            renderError -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background)
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    EmptyState(text = "Could not open offline page.")
                 }
-            },
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.White)
-        )
+            }
+
+            localReaderPath == null -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background)
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    EmptyState(text = "Preparing offline page.")
+                }
+            }
+
+            else -> {
+                AndroidView(
+                    factory = { viewContext ->
+                        GeckoView(viewContext).apply {
+                            setSession(session)
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.White)
+                )
+            }
+        }
     }
 }
 
@@ -1819,6 +2038,8 @@ private fun OfflineReaderScreen(
 private fun OfflineReaderTopBar(
     title: String,
     sourceName: String,
+    readerDarkMode: Boolean,
+    onThemeToggle: () -> Unit,
     onBack: () -> Unit
 ) {
     val darkUi = MaterialTheme.colorScheme.background.luminance() < 0.5f
@@ -1863,6 +2084,19 @@ private fun OfflineReaderTopBar(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            IconButton(onClick = onThemeToggle) {
+                Icon(
+                    painter = painterResource(
+                        id = if (readerDarkMode) {
+                            R.drawable.ic_khobor_sun_24
+                        } else {
+                            R.drawable.ic_khobor_moon_24
+                        }
+                    ),
+                    contentDescription = if (readerDarkMode) "Use light reader" else "Use dark reader",
+                    tint = toolbarContent
+                )
+            }
         }
         HorizontalDivider(color = if (darkUi) Color(0xFF2A2A2A) else Color(0xFFE2E0D8))
     }
@@ -1875,10 +2109,11 @@ private fun BrowserScreen(
     getGeckoRuntime: () -> GeckoRuntime,
     websiteDarkMode: Boolean,
     onWebsiteDarkModeChange: (Boolean) -> Unit,
-    onBuildDarkReaderPage: suspend (NewsSource, String) -> Result<ReaderPage>,
+    onBuildReaderPage: suspend (NewsSource, String, Boolean) -> Result<ReaderPage>,
     onSaveOfflinePage: suspend (NewsSource, String) -> Result<OfflinePage>,
     onClose: () -> Unit,
-    onHome: () -> Unit
+    onHome: () -> Unit,
+    onJankStateChange: (String, String) -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -1892,9 +2127,8 @@ private fun BrowserScreen(
     var currentUrl by remember(source.id) { mutableStateOf(source.url) }
     var savingOffline by remember { mutableStateOf(false) }
     var readerBusy by remember { mutableStateOf(false) }
-    var darkReaderActive by remember(source.id) { mutableStateOf(false) }
-    var darkReaderOriginalUrl by remember(source.id) { mutableStateOf<String?>(null) }
-    var pendingAutoReaderUrl by remember(source.id) { mutableStateOf<String?>(null) }
+    var readerModeActive by remember(source.id) { mutableStateOf(false) }
+    var readerOriginalUrl by remember(source.id) { mutableStateOf<String?>(null) }
 
     fun onMain(block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -1920,8 +2154,8 @@ private fun BrowserScreen(
                     if (url != null && isAllowedTopLevelUrl(url, allowedHosts)) {
                         onMain {
                             currentUrl = url
-                            darkReaderActive = false
-                            darkReaderOriginalUrl = null
+                            readerModeActive = false
+                            readerOriginalUrl = null
                         }
                     }
                 }
@@ -1971,8 +2205,8 @@ private fun BrowserScreen(
                     onMain {
                         if (isAllowedTopLevelUrl(url, allowedHosts)) {
                             currentUrl = url
-                            darkReaderActive = false
-                            darkReaderOriginalUrl = null
+                            readerModeActive = false
+                            readerOriginalUrl = null
                         }
                         browserIssue = null
                         isLoading = true
@@ -1990,20 +2224,12 @@ private fun BrowserScreen(
                     onMain {
                         isLoading = false
                         progress = if (success) 1f else 0f
-                        if (
-                            success &&
-                            websiteDarkMode &&
-                            !darkReaderActive &&
-                            !readerBusy &&
-                            isAllowedTopLevelUrl(currentUrl, allowedHosts)
-                        ) {
-                            pendingAutoReaderUrl = currentUrl
-                        }
                     }
                 }
             }
-            open(getGeckoRuntime())
-            Log.i(APP_TAG, "GeckoSession opened: ${source.id}")
+            PerformanceLogger.trace("openBrowser") {
+                open(getGeckoRuntime())
+            }
             if (sessionActive.value) {
                 loadUri(source.url)
             }
@@ -2011,38 +2237,40 @@ private fun BrowserScreen(
     }
 
     fun currentFetchUrl(): String {
-        return darkReaderOriginalUrl?.takeIf { isAllowedTopLevelUrl(it, allowedHosts) }
+        return readerOriginalUrl?.takeIf { isAllowedTopLevelUrl(it, allowedHosts) }
             ?: currentUrl.takeIf { isAllowedTopLevelUrl(it, allowedHosts) }
             ?: source.url
     }
 
-    fun openDarkReader(targetUrl: String) {
+    fun openReaderMode(targetUrl: String, darkMode: Boolean) {
         if (readerBusy || !isAllowedTopLevelUrl(targetUrl, allowedHosts)) return
         readerBusy = true
         isLoading = true
         progress = 0.04f
+        onJankStateChange("isGeneratingReader", "true")
         coroutineScope.launch {
-            val result = onBuildDarkReaderPage(source, targetUrl)
+            val result = onBuildReaderPage(source, targetUrl, darkMode)
+            onJankStateChange("isGeneratingReader", "false")
             readerBusy = false
             result.fold(
                 onSuccess = { page ->
-                    darkReaderOriginalUrl = page.originalUrl.ifBlank { targetUrl }
-                    darkReaderActive = true
+                    readerOriginalUrl = page.originalUrl.ifBlank { targetUrl }
+                    readerModeActive = true
                     browserIssue = null
                     session.loadUri(Uri.fromFile(File(page.localHtmlPath)).toString())
                 },
                 onFailure = {
                     isLoading = false
                     progress = 0f
-                    Toast.makeText(context, "Could not open dark reader", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Could not open reader", Toast.LENGTH_SHORT).show()
                 }
             )
         }
     }
 
     fun reloadCurrentPage() {
-        if (darkReaderActive) {
-            openDarkReader(currentFetchUrl())
+        if (readerModeActive) {
+            openReaderMode(currentFetchUrl(), websiteDarkMode)
             return
         }
         val target = currentFetchUrl()
@@ -2072,9 +2300,11 @@ private fun BrowserScreen(
     fun saveCurrentPage() {
         if (savingOffline) return
         savingOffline = true
+        onJankStateChange("isSavingOffline", "true")
         val targetUrl = currentFetchUrl()
         coroutineScope.launch {
             val saveResult = onSaveOfflinePage(source, targetUrl)
+            onJankStateChange("isSavingOffline", "false")
             savingOffline = false
             Toast.makeText(
                 context,
@@ -2090,15 +2320,6 @@ private fun BrowserScreen(
             session.navigationDelegate = null
             session.progressDelegate = null
             session.close()
-            Log.i(APP_TAG, "GeckoSession disposed: ${source.id}")
-        }
-    }
-
-    LaunchedEffect(pendingAutoReaderUrl, websiteDarkMode) {
-        val targetUrl = pendingAutoReaderUrl
-        if (websiteDarkMode && targetUrl != null && !darkReaderActive && !readerBusy) {
-            pendingAutoReaderUrl = null
-            openDarkReader(targetUrl)
         }
     }
 
@@ -2109,7 +2330,7 @@ private fun BrowserScreen(
     ) {
         BrowserTopBar(
             sourceName = source.name,
-            websiteDarkMode = darkReaderActive,
+            readerModeActive = readerModeActive,
             savingOffline = savingOffline || readerBusy,
             onBack = {
                 if (browserIssue is BrowserIssue.Blocked) {
@@ -2123,18 +2344,16 @@ private fun BrowserScreen(
             onDownload = { saveCurrentPage() },
             onReload = { reloadCurrentPage() },
             onWebsiteDarkModeToggle = {
-                if (darkReaderActive) {
+                if (readerModeActive) {
                     val originalUrl = currentFetchUrl()
-                    onWebsiteDarkModeChange(false)
-                    darkReaderActive = false
-                    darkReaderOriginalUrl = null
+                    readerModeActive = false
+                    readerOriginalUrl = null
                     browserIssue = null
                     isLoading = true
                     progress = 0.04f
                     session.loadUri(originalUrl)
                 } else {
-                    onWebsiteDarkModeChange(true)
-                    openDarkReader(currentFetchUrl())
+                    openReaderMode(currentFetchUrl(), darkMode = websiteDarkMode)
                 }
             },
             onHome = onHome
@@ -2184,7 +2403,7 @@ private fun BrowserScreen(
 @Composable
 private fun BrowserTopBar(
     sourceName: String,
-    websiteDarkMode: Boolean,
+    readerModeActive: Boolean,
     savingOffline: Boolean,
     onBack: () -> Unit,
     onDownload: () -> Unit,
@@ -2243,13 +2462,13 @@ private fun BrowserTopBar(
             IconButton(onClick = onWebsiteDarkModeToggle) {
                 Icon(
                     painter = painterResource(
-                        id = if (websiteDarkMode) {
+                        id = if (readerModeActive) {
                             R.drawable.ic_khobor_sun_24
                         } else {
                             R.drawable.ic_khobor_moon_24
                         }
                     ),
-                    contentDescription = if (websiteDarkMode) "Turn website dark mode off" else "Turn website dark mode on",
+                    contentDescription = if (readerModeActive) "Back to site" else "Reader",
                     tint = toolbarContent
                 )
             }

@@ -49,6 +49,10 @@ kotlin {
     }
 }
 
+composeCompiler {
+    enableStrongSkippingMode = true
+}
+
 dependencies {
 
     implementation(libs.androidx.core.ktx)
@@ -60,12 +64,15 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.core)
-    implementation(libs.coil.compose)
     implementation(libs.mozilla.geckoview)
     implementation(libs.androidx.core.splashscreen)
     implementation(libs.okhttp)
     implementation(libs.jsoup)
+    implementation(libs.coil.compose)
+    implementation(libs.coil.network.okhttp)
+    implementation(libs.androidx.metrics.performance)
     testImplementation(libs.junit)
+    testImplementation(libs.json)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
@@ -73,3 +80,5 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 }
+
+// TODO: Add a baseline-profile module after the reader/offline flow stabilizes.
