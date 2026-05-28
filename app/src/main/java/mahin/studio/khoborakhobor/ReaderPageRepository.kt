@@ -195,15 +195,14 @@ class ReaderPageRepository(context: Context) {
         const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Khoborakhobor/1.0 Mobile Safari/537.36"
         val OFFLINE_DARK_OVERLAY_CSS = """
-            :root{color-scheme:dark!important}
-            html,body{background-color:#080808!important;color:#F5F2EC!important}
-            body,main,article,section,header,footer,nav,aside,div,table,tbody,thead,tfoot,tr,td,th,ul,ol,li,form,label,figure,figcaption,blockquote{border-color:#2A2A2A!important}
-            main,article,section,header,footer,nav,aside,div,table,td,th,form,input,textarea,select,button{background-color:#151515!important;color:#F5F2EC!important}
-            p,span,h1,h2,h3,h4,h5,h6,li,blockquote,figcaption,strong,b,em,small,label,time{color:#F5F2EC!important}
-            a,a span{color:#E8DFD0!important}
-            input,textarea,select,button{border-color:#2A2A2A!important}
-            hr{border-color:#2A2A2A!important;background-color:#2A2A2A!important}
-            img,video,picture,svg,canvas,iframe{background-color:transparent!important}
+            html,body{background:#080808!important;color:#F5F2EC!important;color-scheme:dark!important}
+            body,main,article,section,header,footer,nav,aside,div,p,span,li,ul,ol,table,tbody,thead,tfoot,tr,td,th,form,label,figure,figcaption,blockquote{border-color:#2A2A2A!important;color:inherit!important}
+            main,article,section,header,footer,nav,aside,div,table,tbody,thead,tfoot,tr,td,th,form{background-color:transparent!important}
+            h1,h2,h3,h4,h5,h6,p,span,li,blockquote,figcaption,strong,b,em,small,label,time{color:#F5F2EC!important}
+            a,a span{color:#F5F2EC!important}
+            input,textarea,select,button{background:#151515!important;color:#F5F2EC!important;border-color:#333333!important}
+            *[style*="background:#fff"],*[style*="background: #fff"],*[style*="background-color:#fff"],*[style*="background-color: #fff"],*[style*="background:white"],*[style*="background: white"],*[style*="background-color:white"],*[style*="background-color: white"]{background-color:#151515!important}
+            img,picture,video,svg,canvas,iframe{filter:none!important;opacity:1!important}
         """.trimIndent()
     }
 }

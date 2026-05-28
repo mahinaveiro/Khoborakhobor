@@ -1,7 +1,6 @@
 package mahin.studio.khoborakhobor
 
 import android.content.res.ColorStateList
-import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
@@ -197,6 +196,7 @@ internal abstract class SourceRecyclerFragment : Fragment(R.layout.fragment_recy
 
     override fun render(state: AppUiState, darkTheme: Boolean) {
         if (!::adapter.isInitialized) return
+        val themeChanged = lastDarkTheme != darkTheme
         lastState = state
         lastDarkTheme = darkTheme
         val items = buildItems(state)
@@ -206,6 +206,9 @@ internal abstract class SourceRecyclerFragment : Fragment(R.layout.fragment_recy
         loadingText.visibility = if (!state.sourcesLoaded && items.isEmpty()) View.VISIBLE else View.GONE
         recyclerView.visibility = if (items.isEmpty() && !state.sourcesLoaded) View.GONE else View.VISIBLE
         adapter.submitList(items) {
+            if (themeChanged) {
+                adapter.notifyDataSetChanged()
+            }
             if (!firstRenderLogged && state.sourcesLoaded) {
                 firstRenderLogged = true
                 recyclerView.doOnPreDraw {
@@ -218,6 +221,7 @@ internal abstract class SourceRecyclerFragment : Fragment(R.layout.fragment_recy
 
 internal class OfflineNativeFragment : Fragment(R.layout.fragment_recycler), NativeStateConsumer {
     private var firstRenderLogged = false
+    private var lastDarkTheme = false
     private lateinit var fragmentRoot: View
     private lateinit var recyclerView: RecyclerView
     private lateinit var loadingText: TextView
@@ -243,6 +247,8 @@ internal class OfflineNativeFragment : Fragment(R.layout.fragment_recycler), Nat
 
     override fun render(state: AppUiState, darkTheme: Boolean) {
         if (!::adapter.isInitialized) return
+        val themeChanged = lastDarkTheme != darkTheme
+        lastDarkTheme = darkTheme
         fragmentRoot.setBackgroundColor(nativeBackground(darkTheme))
         recyclerView.setBackgroundColor(nativeBackground(darkTheme))
         loadingText.setTextColor(nativeMuted(darkTheme))
@@ -254,6 +260,9 @@ internal class OfflineNativeFragment : Fragment(R.layout.fragment_recycler), Nat
             state.offlinePages.map { OfflineListItem.Page(it) }
         }
         adapter.submitList(rows) {
+            if (themeChanged) {
+                adapter.notifyDataSetChanged()
+            }
             if (!firstRenderLogged && state.offlineLoaded) {
                 firstRenderLogged = true
                 recyclerView.doOnPreDraw {
@@ -306,7 +315,7 @@ internal class SettingsNativeFragment : Fragment(R.layout.fragment_settings), Na
                 (requireActivity() as MainActivity).onDisableAdsChange(it)
             })
             panel.addView(settingsDivider())
-            panel.addView(settingsSwitch("Reader dark mode", "readerDarkText", "websiteDark") {
+            panel.addView(settingsSwitch("Webpage dark mode", "readerDarkText", "websiteDark") {
                 (requireActivity() as MainActivity).onWebsiteDarkModeChange(it)
             })
         }
@@ -457,43 +466,39 @@ internal class SettingsNativeFragment : Fragment(R.layout.fragment_settings), Na
     }
 
     private fun applySettingsColors(darkTheme: Boolean) {
-        val background = nativeBackground(darkTheme)
-        val surface = nativeSurface(darkTheme)
-        val text = nativeText(darkTheme)
-        val muted = nativeMuted(darkTheme)
-        val divider = nativeDivider(darkTheme)
-        scrollRoot.setBackgroundColor(background)
-        container.setBackgroundColor(background)
+        val palette = nativePalette(darkTheme)
+        scrollRoot.setBackgroundColor(palette.appBackground)
+        container.setBackgroundColor(palette.appBackground)
         panelViews.forEach { panel ->
-            panel.background = roundedDrawable(surface, divider, dp(18))
-            setTextColors(panel, text, muted)
+            panel.background = roundedDrawable(palette.cardBackground, palette.cardBorder, dp(18))
+            setTextColors(panel, palette.primaryText, palette.secondaryText)
         }
-        createdViews["themeGroup"]?.background = roundedDrawable(nativeSurfaceAlt(darkTheme), divider, dp(16))
+        createdViews["themeGroup"]?.background = roundedDrawable(palette.surfaceAlt, palette.cardBorder, dp(16))
         themeOptionKeys.forEach { key ->
             val textView = createdViews[key] as TextView
             val selected = textView.isSelected
             textView.background = roundedDrawable(
-                fill = if (selected) text else Color.TRANSPARENT,
-                stroke = Color.TRANSPARENT,
+                fill = if (selected) palette.chipSelectedBg else ThemePalette.TRANSPARENT,
+                stroke = ThemePalette.TRANSPARENT,
                 radius = dp(13)
             )
-            textView.setTextColor(if (selected) nativeControlTextOnPrimary(darkTheme) else text)
+            textView.setTextColor(if (selected) palette.chipSelectedText else palette.primaryText)
         }
         statusTextKeys.forEach { key ->
             (createdViews[key] as TextView).apply {
                 this.background = null
-                setTextColor(muted)
+                setTextColor(palette.secondaryText)
             }
         }
         actionButtonKeys.forEach { key ->
             (createdViews[key] as TextView).apply {
-                this.background = roundedDrawable(surface, divider, dp(14))
-                setTextColor(text)
+                this.background = roundedDrawable(palette.outlinedButtonBg, palette.outlinedButtonBorder, dp(14))
+                setTextColor(palette.outlinedButtonText)
             }
         }
         applySwitchColors(createdViews["disableAds"] as SwitchMaterial, darkTheme)
         applySwitchColors(createdViews["websiteDark"] as SwitchMaterial, darkTheme)
-        colorDividers(container, divider)
+        colorDividers(container, palette.cardBorder)
     }
 
     private fun setSwitchChecked(key: String, checked: Boolean) {
@@ -502,13 +507,14 @@ internal class SettingsNativeFragment : Fragment(R.layout.fragment_settings), Na
     }
 
     private fun applySwitchColors(switch: SwitchMaterial, darkTheme: Boolean) {
+        val palette = nativePalette(darkTheme)
         switch.thumbTintList = ColorStateList(
             arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-            intArrayOf(nativeControlTextOnPrimary(darkTheme), nativeSwitchOffThumb(darkTheme))
+            intArrayOf(palette.buttonText, palette.switchOffThumb)
         )
         switch.trackTintList = ColorStateList(
             arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-            intArrayOf(nativeText(darkTheme), nativeSwitchOffTrack(darkTheme))
+            intArrayOf(palette.buttonBg, palette.switchOffTrack)
         )
     }
 }
@@ -541,9 +547,11 @@ internal class BrowserComposeFragment : Fragment() {
                             getGeckoRuntime = { host.runtimeWithExtensions() },
                             websiteDarkMode = state.websiteDarkMode,
                             onWebsiteDarkModeChange = { host.onWebsiteDarkModeChange(it) },
-                            onBuildReaderPage = { readerSource, url, darkMode ->
-                                host.buildReaderPage(readerSource, url, darkMode)
+                            onAttachLiveDarkOverlay = { session, enabled -> host.attachLiveDarkOverlay(session, enabled) },
+                            onSetLiveDarkOverlay = { session, enabled, onFallbackReload ->
+                                host.setLiveDarkOverlay(session, enabled, onFallbackReload)
                             },
+                            onDetachLiveDarkOverlay = { session -> host.detachLiveDarkOverlay(session) },
                             onSaveOfflinePage = { saveSource, url ->
                                 host.saveOfflinePage(saveSource, url)
                             },
@@ -738,16 +746,16 @@ private class HomeHeaderHolder(view: View, private val darkThemeProvider: () -> 
     private val blocking: TextView = view.findViewById(R.id.homeBlockingState)
 
     fun bind(item: SourceListItem.HomeHeader) {
-        val dark = darkThemeProvider()
-        root.background = roundedDrawable(nativeSurface(dark), nativeDivider(dark), dp(16))
-        title.setTextColor(nativeText(dark))
+        val palette = nativePalette(darkThemeProvider())
+        root.background = roundedDrawable(palette.cardBackground, palette.cardBorder, dp(16))
+        title.setTextColor(palette.primaryText)
         total.text = "${item.sourceCount} sources"
         categories.text = "${item.categoryCount} categories"
         val active = item.disableAds && item.blockerStatus != UBlockStatus.DISABLED
         blocking.text = "Blocking ${if (active) "On" else "Off"}"
         listOf(total, categories, blocking).forEach {
-            it.background = roundedDrawable(nativeSurfaceAlt(dark), nativeDivider(dark), dp(17))
-            it.setTextColor(nativeMuted(dark))
+            it.background = roundedDrawable(palette.surfaceAlt, palette.cardBorder, dp(17))
+            it.setTextColor(palette.secondaryText)
         }
     }
 }
@@ -761,10 +769,10 @@ private class SearchHolder(
     private var watcher: TextWatcher? = null
 
     fun bind(item: SourceListItem.Search) {
-        val dark = darkThemeProvider()
-        editText.background = roundedDrawable(nativeSurface(dark), nativeDivider(dark), dp(16))
-        editText.setTextColor(nativeText(dark))
-        editText.setHintTextColor(nativeMuted(dark))
+        val palette = nativePalette(darkThemeProvider())
+        editText.background = roundedDrawable(palette.cardBackground, palette.cardBorder, dp(16))
+        editText.setTextColor(palette.primaryText)
+        editText.setHintTextColor(palette.secondaryText)
         watcher?.let { editText.removeTextChangedListener(it) }
         if (editText.text.toString() != item.query) {
             editText.setText(item.query)
@@ -788,7 +796,7 @@ private class FilterHolder(
     private val container: LinearLayout = view.findViewById(R.id.filterContainer)
 
     fun bind(item: SourceListItem.FilterRow) {
-        val dark = darkThemeProvider()
+        val palette = nativePalette(darkThemeProvider())
         container.removeAllViews()
         item.categories.forEach { category ->
             val chip = TextView(container.context).apply {
@@ -802,10 +810,10 @@ private class FilterHolder(
                 maxLines = 1
                 ellipsize = TextUtils.TruncateAt.END
                 val selected = category == item.selected
-                setTextColor(if (selected) nativeControlTextOnPrimary(dark) else nativeText(dark))
+                setTextColor(if (selected) palette.chipSelectedText else palette.chipUnselectedText)
                 background = roundedDrawable(
-                    fill = if (selected) nativeText(dark) else nativeSurface(dark),
-                    stroke = nativeDivider(dark),
+                    fill = if (selected) palette.chipSelectedBg else palette.chipUnselectedBg,
+                    stroke = palette.cardBorder,
                     radius = dp(18)
                 )
                 applySelectableForeground()
@@ -847,25 +855,22 @@ private class SourceCardHolder(
 
     fun bind(item: SourceListItem.SourceCard, iconOnly: Boolean) {
         val source = item.source
-        val dark = darkThemeProvider()
         if (!iconOnly) {
-            root.background = roundedDrawable(nativeSurface(dark), nativeDivider(dark), dp(16))
-            root.setOnClickListener { onOpenSource(source) }
-            initials.text = nativeInitials(source.name)
-            initials.background = roundedDrawable(nativeSurfaceAlt(dark), nativeDivider(dark), dp(11))
-            initials.setTextColor(nativeMuted(dark))
-            name.text = source.name
-            name.setTextColor(nativeText(dark))
-            meta.text = "${source.category} | ${source.type}"
-            meta.setTextColor(nativeMuted(dark))
-            favorite.text = if (item.isFavorite) "Saved" else "Save"
-            favorite.background = roundedDrawable(
-                fill = if (item.isFavorite) nativeText(dark) else Color.TRANSPARENT,
-                stroke = if (item.isFavorite) nativeText(dark) else nativeDivider(dark),
-                radius = dp(17)
+            bindSourceCard(
+                root = root,
+                initials = initials,
+                name = name,
+                meta = meta,
+                favorite = favorite,
+                source = source,
+                isSaved = item.isFavorite,
+                palette = nativePalette(darkThemeProvider()),
+                onOpenSource = onOpenSource,
+                onToggleFavorite = onToggleFavorite,
+                radius = dp(16),
+                iconRadius = dp(11),
+                buttonRadius = dp(17)
             )
-            favorite.setTextColor(if (item.isFavorite) nativeControlTextOnPrimary(dark) else nativeText(dark))
-            favorite.setOnClickListener { onToggleFavorite(source) }
         }
         val state = iconCacheManager.stateFor(source).value
         val ready = state as? SourceIconState.Ready
@@ -878,6 +883,40 @@ private class SourceCardHolder(
             iconCacheManager.request(source)
         }
     }
+}
+
+private fun bindSourceCard(
+    root: LinearLayout,
+    initials: TextView,
+    name: TextView,
+    meta: TextView,
+    favorite: TextView,
+    source: NewsSource,
+    isSaved: Boolean,
+    palette: ThemePalette,
+    onOpenSource: (NewsSource) -> Unit,
+    onToggleFavorite: (NewsSource) -> Unit,
+    radius: Int,
+    iconRadius: Int,
+    buttonRadius: Int
+) {
+    root.background = roundedDrawable(palette.cardBackground, palette.cardBorder, radius)
+    root.setOnClickListener { onOpenSource(source) }
+    initials.text = nativeInitials(source.name)
+    initials.background = roundedDrawable(palette.surfaceAlt, palette.cardBorder, iconRadius)
+    initials.setTextColor(palette.primaryText)
+    name.text = source.name
+    name.setTextColor(palette.primaryText)
+    meta.text = "${source.category} | ${source.type}"
+    meta.setTextColor(palette.secondaryText)
+    favorite.text = if (isSaved) "Saved" else "Save"
+    favorite.background = roundedDrawable(
+        fill = if (isSaved) palette.buttonBg else palette.outlinedButtonBg,
+        stroke = if (isSaved) palette.buttonBorder else palette.outlinedButtonBorder,
+        radius = buttonRadius
+    )
+    favorite.setTextColor(if (isSaved) palette.buttonText else palette.outlinedButtonText)
+    favorite.setOnClickListener { onToggleFavorite(source) }
 }
 
 private class EmptyHolder(view: View, private val darkThemeProvider: () -> Boolean) : RecyclerView.ViewHolder(view) {
@@ -942,19 +981,19 @@ private class OfflinePageHolder(
     private val delete: ImageButton = view.findViewById(R.id.deleteButton)
 
     fun bind(page: OfflinePage) {
-        val dark = darkThemeProvider()
-        root.background = roundedDrawable(nativeSurface(dark), nativeDivider(dark), dp(16))
+        val palette = nativePalette(darkThemeProvider())
+        root.background = roundedDrawable(palette.cardBackground, palette.cardBorder, dp(16))
         root.setOnClickListener { onOpen(page) }
         initials.text = nativeInitials(page.sourceName)
-        initials.background = roundedDrawable(nativeSurfaceAlt(dark), nativeDivider(dark), dp(12))
-        initials.setTextColor(nativeMuted(dark))
+        initials.background = roundedDrawable(palette.surfaceAlt, palette.cardBorder, dp(12))
+        initials.setTextColor(palette.primaryText)
         title.text = page.title
-        title.setTextColor(nativeText(dark))
+        title.setTextColor(palette.primaryText)
         source.text = page.sourceName
-        source.setTextColor(nativeMuted(dark))
+        source.setTextColor(palette.secondaryText)
         date.text = nativeShortSavedAt(page.savedAt)
-        date.setTextColor(nativeMuted(dark))
-        delete.imageTintList = ColorStateList.valueOf(nativeSubtleIcon(dark))
+        date.setTextColor(palette.secondaryText)
+        delete.imageTintList = ColorStateList.valueOf(palette.secondaryText)
         delete.setOnClickListener { onDelete(page) }
     }
 }
@@ -1057,16 +1096,22 @@ private fun roundedDrawable(fill: Int, stroke: Int, radius: Int): GradientDrawab
     }
 }
 
-private fun nativeBackground(dark: Boolean): Int = if (dark) 0xFF080808.toInt() else 0xFFF4EFE6.toInt()
-private fun nativeSurface(dark: Boolean): Int = if (dark) 0xFF151515.toInt() else 0xFFFFFDF8.toInt()
-private fun nativeSurfaceAlt(dark: Boolean): Int = if (dark) 0xFF1D1D1D.toInt() else 0xFFECE5DA.toInt()
-private fun nativeText(dark: Boolean): Int = if (dark) 0xFFF5F2EC.toInt() else 0xFF17130D.toInt()
-private fun nativeMuted(dark: Boolean): Int = if (dark) 0xFFA8A29A.toInt() else 0xFF6F675C.toInt()
-private fun nativeDivider(dark: Boolean): Int = if (dark) 0xFF2A2A2A.toInt() else 0xFFDED6CA.toInt()
-private fun nativeSubtleIcon(dark: Boolean): Int = if (dark) 0xFF8A8A8A.toInt() else 0xFF8A8175.toInt()
-private fun nativeSwitchOffTrack(dark: Boolean): Int = if (dark) 0xFF2D2D2D.toInt() else 0xFFD8D0C4.toInt()
-private fun nativeSwitchOffThumb(dark: Boolean): Int = if (dark) 0xFF777777.toInt() else 0xFF8A8175.toInt()
-private fun nativeControlTextOnPrimary(dark: Boolean): Int = if (dark) nativeBackground(dark) else nativeSurface(dark)
+private fun nativePalette(dark: Boolean): ThemePalette = ThemeManager.palette(dark)
+private fun nativeBackground(dark: Boolean): Int = nativePalette(dark).appBackground
+private fun nativeSurface(dark: Boolean): Int = nativePalette(dark).cardBackground
+private fun nativeSurfaceAlt(dark: Boolean): Int = nativePalette(dark).surfaceAlt
+private fun nativeText(dark: Boolean): Int = nativePalette(dark).primaryText
+private fun nativeMuted(dark: Boolean): Int = nativePalette(dark).secondaryText
+private fun nativeDivider(dark: Boolean): Int = nativePalette(dark).cardBorder
+private fun nativeSubtleIcon(dark: Boolean): Int = nativePalette(dark).subtleIcon
+private fun nativeSwitchOffTrack(dark: Boolean): Int = nativePalette(dark).switchOffTrack
+private fun nativeSwitchOffThumb(dark: Boolean): Int = nativePalette(dark).switchOffThumb
+private fun nativeButtonBg(dark: Boolean): Int = nativePalette(dark).buttonBg
+private fun nativeButtonText(dark: Boolean): Int = nativePalette(dark).buttonText
+private fun nativeOutlinedButtonBg(dark: Boolean): Int = nativePalette(dark).outlinedButtonBg
+private fun nativeOutlinedButtonText(dark: Boolean): Int = nativePalette(dark).outlinedButtonText
+private fun nativeOutlinedButtonBorder(dark: Boolean): Int = nativePalette(dark).outlinedButtonBorder
+private fun nativeControlTextOnPrimary(dark: Boolean): Int = nativeButtonText(dark)
 
 private fun NewsSource.nativeMatchesCategory(category: String): Boolean {
     return when (category) {

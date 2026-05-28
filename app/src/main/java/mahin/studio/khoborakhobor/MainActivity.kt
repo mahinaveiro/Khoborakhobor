@@ -131,6 +131,7 @@ import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.StorageController
 import org.mozilla.geckoview.WebRequestError
+import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -162,6 +163,8 @@ class MainActivity : AppCompatActivity() {
     private var selectedItemId: Int = R.id.nav_home
     private var currentState = AppUiState()
     private var overlayFragment: Fragment? = null
+    private var lastRenderedDarkTheme: Boolean? = null
+    private var initialTabsAttached = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val appStartMillis = SystemClock.elapsedRealtime()
@@ -191,9 +194,16 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.uiState.collectLatest { state ->
+                    val darkTheme = resolveDarkTheme(state.themePreference)
+                    val themeChanged = lastRenderedDarkTheme?.let { it != darkTheme } == true
                     currentState = state
-                    applyShellState(state)
-                    updateCurrentFragmentState(state)
+                    applyShellState(state, darkTheme)
+                    if (themeChanged) {
+                        updateAllNativeFragmentStates(state, darkTheme)
+                    } else {
+                        updateCurrentFragmentState(state, darkTheme)
+                    }
+                    lastRenderedDarkTheme = darkTheme
                 }
             }
         }
@@ -205,9 +215,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         window.decorView.post {
-            setupTabFragments()
-            updateCurrentFragmentState(currentState)
-            viewModel.loadInitial()
+            attachInitialTabs()
         }
     }
 
@@ -347,6 +355,22 @@ class MainActivity : AppCompatActivity() {
         return runtime
     }
 
+    internal fun attachLiveDarkOverlay(session: GeckoSession, enabled: Boolean) {
+        liveDarkController(runtimeWithExtensions()).attach(session, enabled)
+    }
+
+    internal fun setLiveDarkOverlay(
+        session: GeckoSession,
+        enabled: Boolean,
+        onFallbackReload: () -> Unit
+    ) {
+        liveDarkController(runtimeWithExtensions()).setEnabled(session, enabled, onFallbackReload)
+    }
+
+    internal fun detachLiveDarkOverlay(session: GeckoSession) {
+        controllerStore.liveDarkController?.detach(session)
+    }
+
     internal fun runtimeOnly(): GeckoRuntime {
         val runtime = GeckoRuntimeProvider.get(
             context = applicationContext,
@@ -408,6 +432,18 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun attachInitialTabs() {
+        if (initialTabsAttached || isFinishing || isDestroyed) return
+        if (supportFragmentManager.isStateSaved) {
+            window.decorView.postDelayed({ attachInitialTabs() }, 100L)
+            return
+        }
+        setupTabFragments()
+        initialTabsAttached = true
+        updateCurrentFragmentState(currentState, isDarkTheme())
+        viewModel.loadInitial()
+    }
+
     private fun setupBottomNav() {
         if (bottomNav.menu.findItem(selectedItemId) == null) {
             selectedItemId = R.id.nav_home
@@ -446,8 +482,8 @@ class MainActivity : AppCompatActivity() {
         }
         setShellVisible(true)
         overlayFragment = null
-        applyShellState(currentState)
-        updateCurrentFragmentState(currentState)
+        applyShellState(currentState, isDarkTheme())
+        updateCurrentFragmentState(currentState, isDarkTheme())
         updateJankStateForShell()
         if (logSwitch) {
             PerformanceLogger.logDuration("Tab switch ${tabLabel(itemId)}", start)
@@ -480,41 +516,37 @@ class MainActivity : AppCompatActivity() {
         bottomNav.visibility = visibility
     }
 
-    private fun applyShellState(state: AppUiState) {
+    private fun applyShellState(state: AppUiState, darkTheme: Boolean = resolveDarkTheme(state.themePreference)) {
         topBarTitle.text = if (selectedItemId == R.id.nav_home) getString(R.string.app_name) else tabLabel(selectedItemId)
         themeButton.visibility = View.VISIBLE
         themeButton.setImageResource(
-            if (resolveDarkTheme(state.themePreference)) R.drawable.ic_khobor_sun_24 else R.drawable.ic_khobor_moon_24
+            if (darkTheme) R.drawable.ic_khobor_sun_24 else R.drawable.ic_khobor_moon_24
         )
-        applyNativeColors(resolveDarkTheme(state.themePreference))
+        applyNativeColors(darkTheme)
     }
 
     @Suppress("DEPRECATION")
     private fun applyNativeColors(darkTheme: Boolean) {
-        val background = if (darkTheme) 0xFF080808.toInt() else 0xFFF4EFE6.toInt()
-        val text = if (darkTheme) 0xFFF5F2EC.toInt() else 0xFF17130D.toInt()
-        val muted = if (darkTheme) 0xFFA8A29A.toInt() else 0xFF6F675C.toInt()
-        val divider = if (darkTheme) 0xFF2A2A2A.toInt() else 0xFFDED6CA.toInt()
-        val ripple = 0x00000000
-        findViewById<View>(R.id.appRoot).setBackgroundColor(background)
-        topBar.setBackgroundColor(background)
-        bottomNav.setBackgroundColor(background)
-        topDivider.setBackgroundColor(divider)
-        bottomDivider.setBackgroundColor(divider)
-        topBarMark.imageTintList = ColorStateList.valueOf(text)
-        topBarTitle.setTextColor(text)
-        themeButton.imageTintList = ColorStateList.valueOf(muted)
-        bottomNav.itemRippleColor = ColorStateList.valueOf(ripple)
+        val palette = ThemeManager.palette(darkTheme)
+        findViewById<View>(R.id.appRoot).setBackgroundColor(palette.appBackground)
+        topBar.setBackgroundColor(palette.topBarBackground)
+        bottomNav.setBackgroundColor(palette.navBackground)
+        topDivider.setBackgroundColor(palette.cardBorder)
+        bottomDivider.setBackgroundColor(palette.cardBorder)
+        topBarMark.imageTintList = ColorStateList.valueOf(palette.primaryText)
+        topBarTitle.setTextColor(palette.primaryText)
+        themeButton.imageTintList = ColorStateList.valueOf(palette.secondaryText)
+        bottomNav.itemRippleColor = ColorStateList.valueOf(ThemePalette.TRANSPARENT)
         bottomNav.itemTextColor = ColorStateList(
             arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-            intArrayOf(text, muted)
+            intArrayOf(palette.primaryText, palette.secondaryText)
         )
         bottomNav.itemIconTintList = ColorStateList(
             arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-            intArrayOf(text, muted)
+            intArrayOf(palette.primaryText, palette.secondaryText)
         )
-        window.statusBarColor = background
-        window.navigationBarColor = background
+        window.statusBarColor = palette.topBarBackground
+        window.navigationBarColor = palette.navBackground
         WindowCompat.getInsetsController(window, window.decorView).apply {
             isAppearanceLightStatusBars = !darkTheme
             isAppearanceLightNavigationBars = !darkTheme
@@ -524,9 +556,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateCurrentFragmentState(state: AppUiState) {
+    private fun updateCurrentFragmentState(state: AppUiState, darkTheme: Boolean = isDarkTheme()) {
         if (overlayFragment != null) return
-        (selectedTab()?.fragment as? NativeStateConsumer)?.render(state, isDarkTheme())
+        (selectedTab()?.fragment as? NativeStateConsumer)?.render(state, darkTheme)
+    }
+
+    private fun updateAllNativeFragmentStates(state: AppUiState, darkTheme: Boolean) {
+        if (overlayFragment != null) return
+        tabFragments().forEach { fragment ->
+            (fragment as? NativeStateConsumer)?.render(state, darkTheme)
+        }
     }
 
     private fun updateJankStateForShell() {
@@ -547,6 +586,11 @@ class MainActivity : AppCompatActivity() {
             controllerStore.adBlockController = controller
             controller.start(currentState.disableAds) { viewModel.setAdBlockState(it) }
         }
+    }
+
+    private fun liveDarkController(runtime: GeckoRuntime): KhoborLiveDarkController {
+        controllerStore.liveDarkController?.let { return it }
+        return KhoborLiveDarkController(runtime).also { controllerStore.liveDarkController = it }
     }
 
     private fun createNativeTabs(): List<NativeTab> {
@@ -587,14 +631,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun resolveDarkTheme(themePreference: ThemePreference): Boolean {
-        return when (themePreference) {
-            ThemePreference.System -> {
-                val nightMask = resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
-                false
-            }
-            ThemePreference.Light -> false
-            ThemePreference.Dark -> true
-        }
+        return ThemeManager.isDark(resources, themePreference)
     }
 
     private fun installDebugStrictMode() {
@@ -623,6 +660,7 @@ class MainActivity : AppCompatActivity() {
 
 private class RuntimeControllerStore {
     var adBlockController: AdBlockController? = null
+    var liveDarkController: KhoborLiveDarkController? = null
 }
 
 private data class LoadedPreferences(
@@ -693,7 +731,9 @@ private fun KhoborakhoborApp(
     onThemePreferenceChange: (ThemePreference) -> Unit,
     onDisableAdsChange: (Boolean) -> Unit,
     onWebsiteDarkModeChange: (Boolean) -> Unit,
-    onBuildReaderPage: suspend (NewsSource, String, Boolean) -> Result<ReaderPage>,
+    onBuildReaderPage: suspend (NewsSource, String, Boolean) -> Result<ReaderPage> = { _, _, _ ->
+        Result.failure(IllegalStateException("Live reader mode is disabled"))
+    },
     onBuildOfflineReaderPage: suspend (OfflinePage, Boolean) -> Result<ReaderPage>,
     onSaveOfflinePage: suspend (NewsSource, String) -> Result<OfflinePage>,
     onDeleteOfflinePage: (OfflinePage) -> Unit,
@@ -972,7 +1012,7 @@ private fun AppBottomNavigation(
                         color = if (selected) {
                             MaterialTheme.colorScheme.primary
                         } else {
-                            Color.Transparent
+                            Color(ThemePalette.TRANSPARENT)
                         }
                     ) {
                         val iconTint = if (selected) {
@@ -1678,7 +1718,7 @@ private fun SettingsScreen(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
-                    Text("Reader Dark Mode", style = MaterialTheme.typography.titleMedium)
+                    Text("Webpage Dark Mode", style = MaterialTheme.typography.titleMedium)
                     Text(
                         text = if (websiteDarkMode) "On" else "Off",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1732,6 +1772,7 @@ private fun KhoborSwitch(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
+    val palette = ThemeManager.palette(MaterialTheme.colorScheme.background.luminance() < 0.5f)
     Switch(
         checked = checked,
         onCheckedChange = onCheckedChange,
@@ -1740,13 +1781,13 @@ private fun KhoborSwitch(
             checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
             checkedTrackColor = MaterialTheme.colorScheme.primary,
             checkedBorderColor = MaterialTheme.colorScheme.primary,
-            uncheckedThumbColor = Color(0xFFE8E8E8),
-            uncheckedTrackColor = Color(0xFF777777),
-            uncheckedBorderColor = Color(0xFF777777),
+            uncheckedThumbColor = Color(palette.switchOffThumb),
+            uncheckedTrackColor = Color(palette.switchOffTrack),
+            uncheckedBorderColor = Color(palette.switchOffTrack),
             disabledCheckedThumbColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.72f),
             disabledCheckedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.42f),
-            disabledUncheckedThumbColor = Color(0xFFDADADA),
-            disabledUncheckedTrackColor = Color(0xFF8A8A8A)
+            disabledUncheckedThumbColor = Color(palette.switchOffThumb).copy(alpha = 0.62f),
+            disabledUncheckedTrackColor = Color(palette.switchOffTrack).copy(alpha = 0.62f)
         )
     )
 }
@@ -2300,7 +2341,7 @@ internal fun OfflineReaderScreen(
                     },
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.White)
+                        .background(MaterialTheme.colorScheme.background)
                 )
             }
         }
@@ -2316,8 +2357,9 @@ private fun OfflineReaderTopBar(
     onBack: () -> Unit
 ) {
     val darkUi = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val toolbarBackground = if (darkUi) Color(0xFF080808) else Color(0xFFF4EFE6)
-    val toolbarContent = if (darkUi) Color(0xFFF5F2EC) else Color(0xFF17130D)
+    val palette = ThemeManager.palette(darkUi)
+    val toolbarBackground = Color(palette.topBarBackground)
+    val toolbarContent = Color(palette.primaryText)
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -2366,12 +2408,12 @@ private fun OfflineReaderTopBar(
                             R.drawable.ic_khobor_moon_24
                         }
                     ),
-                    contentDescription = if (readerDarkMode) "Use light reader" else "Use dark reader",
+                    contentDescription = if (readerDarkMode) "Use light page" else "Use dark page",
                     tint = toolbarContent
                 )
             }
         }
-        HorizontalDivider(color = if (darkUi) Color(0xFF2A2A2A) else Color(0xFFE2E0D8))
+        HorizontalDivider(color = Color(palette.cardBorder))
     }
 }
 
@@ -2382,7 +2424,12 @@ internal fun BrowserScreen(
     getGeckoRuntime: () -> GeckoRuntime,
     websiteDarkMode: Boolean,
     onWebsiteDarkModeChange: (Boolean) -> Unit,
-    onBuildReaderPage: suspend (NewsSource, String, Boolean) -> Result<ReaderPage>,
+    onAttachLiveDarkOverlay: (GeckoSession, Boolean) -> Unit = { _, _ -> },
+    onSetLiveDarkOverlay: (GeckoSession, Boolean, () -> Unit) -> Unit = { _, _, onFallbackReload -> onFallbackReload() },
+    onDetachLiveDarkOverlay: (GeckoSession) -> Unit = {},
+    onBuildReaderPage: suspend (NewsSource, String, Boolean) -> Result<ReaderPage> = { _, _, _ ->
+        Result.failure(IllegalStateException("Live reader mode is disabled"))
+    },
     onSaveOfflinePage: suspend (NewsSource, String) -> Result<OfflinePage>,
     onClose: () -> Unit,
     onHome: () -> Unit,
@@ -2398,10 +2445,13 @@ internal fun BrowserScreen(
     var progress by remember { mutableFloatStateOf(0f) }
     var browserIssue by remember { mutableStateOf<BrowserIssue?>(null) }
     var currentUrl by remember(source.id) { mutableStateOf(source.url) }
+    var liveDarkAppliedForUrl by remember(source.id) { mutableStateOf<String?>(null) }
+    var liveDarkDesired by remember(source.id) { mutableStateOf(websiteDarkMode) }
     var savingOffline by remember { mutableStateOf(false) }
-    var readerBusy by remember { mutableStateOf(false) }
-    var readerModeActive by remember(source.id) { mutableStateOf(false) }
-    var readerOriginalUrl by remember(source.id) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(websiteDarkMode) {
+        liveDarkDesired = websiteDarkMode
+    }
 
     fun onMain(block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -2427,8 +2477,6 @@ internal fun BrowserScreen(
                     if (url != null && isAllowedTopLevelUrl(url, allowedHosts)) {
                         onMain {
                             currentUrl = url
-                            readerModeActive = false
-                            readerOriginalUrl = null
                         }
                     }
                 }
@@ -2439,7 +2487,7 @@ internal fun BrowserScreen(
                 ): GeckoResult<AllowOrDeny> {
                     return if (
                         isAllowedTopLevelUrl(request.uri, allowedHosts) ||
-                        isAllowedBrowserReaderUrl(request.uri)
+                        isKhoborLiveDarkScriptUrl(request.uri)
                     ) {
                         GeckoResult.allow()
                     } else {
@@ -2478,8 +2526,7 @@ internal fun BrowserScreen(
                     onMain {
                         if (isAllowedTopLevelUrl(url, allowedHosts)) {
                             currentUrl = url
-                            readerModeActive = false
-                            readerOriginalUrl = null
+                            liveDarkAppliedForUrl = null
                         }
                         browserIssue = null
                         isLoading = true
@@ -2497,6 +2544,15 @@ internal fun BrowserScreen(
                     onMain {
                         isLoading = false
                         progress = if (success) 1f else 0f
+                        if (
+                            success &&
+                            liveDarkDesired &&
+                            browserIssue == null &&
+                            liveDarkAppliedForUrl != currentUrl
+                        ) {
+                            liveDarkAppliedForUrl = currentUrl
+                            applyLiveDarkOverlay(session, enabled = true)
+                        }
                     }
                 }
             }
@@ -2506,46 +2562,16 @@ internal fun BrowserScreen(
             if (sessionActive.value) {
                 loadUri(source.url)
             }
+            onAttachLiveDarkOverlay(this, websiteDarkMode)
         }
     }
 
     fun currentFetchUrl(): String {
-        return readerOriginalUrl?.takeIf { isAllowedTopLevelUrl(it, allowedHosts) }
-            ?: currentUrl.takeIf { isAllowedTopLevelUrl(it, allowedHosts) }
+        return currentUrl.takeIf { isAllowedTopLevelUrl(it, allowedHosts) }
             ?: source.url
     }
 
-    fun openReaderMode(targetUrl: String, darkMode: Boolean) {
-        if (readerBusy || !isAllowedTopLevelUrl(targetUrl, allowedHosts)) return
-        readerBusy = true
-        isLoading = true
-        progress = 0.04f
-        onJankStateChange("isGeneratingReader", "true")
-        coroutineScope.launch {
-            val result = onBuildReaderPage(source, targetUrl, darkMode)
-            onJankStateChange("isGeneratingReader", "false")
-            readerBusy = false
-            result.fold(
-                onSuccess = { page ->
-                    readerOriginalUrl = page.originalUrl.ifBlank { targetUrl }
-                    readerModeActive = true
-                    browserIssue = null
-                    session.loadUri(Uri.fromFile(File(page.localHtmlPath)).toString())
-                },
-                onFailure = {
-                    isLoading = false
-                    progress = 0f
-                    Toast.makeText(context, "Could not open reader", Toast.LENGTH_SHORT).show()
-                }
-            )
-        }
-    }
-
     fun reloadCurrentPage() {
-        if (readerModeActive) {
-            openReaderMode(currentFetchUrl(), websiteDarkMode)
-            return
-        }
         val target = currentFetchUrl()
         browserIssue = null
         isLoading = true
@@ -2589,6 +2615,7 @@ internal fun BrowserScreen(
 
     DisposableEffect(session) {
         onDispose {
+            onDetachLiveDarkOverlay(session)
             sessionActive.value = false
             session.navigationDelegate = null
             session.progressDelegate = null
@@ -2603,8 +2630,8 @@ internal fun BrowserScreen(
     ) {
         BrowserTopBar(
             sourceName = source.name,
-            readerModeActive = readerModeActive,
-            savingOffline = savingOffline || readerBusy,
+            websiteDarkMode = websiteDarkMode,
+            savingOffline = savingOffline,
             onBack = {
                 if (browserIssue is BrowserIssue.Blocked) {
                     leaveBlockedPage()
@@ -2617,22 +2644,17 @@ internal fun BrowserScreen(
             onDownload = { saveCurrentPage() },
             onReload = { reloadCurrentPage() },
             onWebsiteDarkModeToggle = {
-                if (readerModeActive) {
-                    val originalUrl = currentFetchUrl()
-                    readerModeActive = false
-                    readerOriginalUrl = null
-                    browserIssue = null
-                    isLoading = true
-                    progress = 0.04f
-                    session.loadUri(originalUrl)
-                } else {
-                    openReaderMode(currentFetchUrl(), darkMode = websiteDarkMode)
-                }
+                val enabled = !websiteDarkMode
+                liveDarkDesired = enabled
+                onWebsiteDarkModeChange(enabled)
+                onSetLiveDarkOverlay(session, enabled) {}
+                liveDarkAppliedForUrl = if (enabled) currentUrl else null
+                applyLiveDarkOverlay(session, enabled)
             },
             onHome = onHome
         )
         BrowserProgressBar(
-            isLoading = isLoading || readerBusy,
+            isLoading = isLoading,
             progress = progress
         )
         Box(modifier = Modifier.fillMaxSize()) {
@@ -2646,7 +2668,7 @@ internal fun BrowserScreen(
                     },
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.White)
+                        .background(MaterialTheme.colorScheme.background)
                 )
             } else {
                 BrowserIssuePage(
@@ -2676,7 +2698,7 @@ internal fun BrowserScreen(
 @Composable
 private fun BrowserTopBar(
     sourceName: String,
-    readerModeActive: Boolean,
+    websiteDarkMode: Boolean,
     savingOffline: Boolean,
     onBack: () -> Unit,
     onDownload: () -> Unit,
@@ -2685,8 +2707,9 @@ private fun BrowserTopBar(
     onHome: () -> Unit
 ) {
     val darkUi = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val toolbarBackground = if (darkUi) Color(0xFF080808) else Color(0xFFF4EFE6)
-    val toolbarContent = if (darkUi) Color(0xFFF5F2EC) else Color(0xFF17130D)
+    val palette = ThemeManager.palette(darkUi)
+    val toolbarBackground = Color(palette.topBarBackground)
+    val toolbarContent = Color(palette.primaryText)
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -2735,13 +2758,13 @@ private fun BrowserTopBar(
             IconButton(onClick = onWebsiteDarkModeToggle) {
                 Icon(
                     painter = painterResource(
-                        id = if (readerModeActive) {
+                        id = if (websiteDarkMode) {
                             R.drawable.ic_khobor_sun_24
                         } else {
                             R.drawable.ic_khobor_moon_24
                         }
                     ),
-                    contentDescription = if (readerModeActive) "Back to site" else "Reader",
+                    contentDescription = if (websiteDarkMode) "Use light page" else "Use dark page",
                     tint = toolbarContent
                 )
             }
@@ -2753,7 +2776,7 @@ private fun BrowserTopBar(
                 )
             }
         }
-        HorizontalDivider(color = if (darkUi) Color(0xFF2A2A2A) else Color(0xFFE2E0D8))
+        HorizontalDivider(color = Color(palette.cardBorder))
     }
 }
 
@@ -2931,10 +2954,38 @@ private fun isAllowedOfflineReaderUrl(url: String): Boolean {
     return scheme == "file" || scheme == "about"
 }
 
-private fun isAllowedBrowserReaderUrl(url: String): Boolean {
+private fun isKhoborLiveDarkScriptUrl(url: String): Boolean {
     val parsed = runCatching { Uri.parse(url) }.getOrNull() ?: return false
-    return parsed.scheme?.lowercase() == "file" &&
-        parsed.path?.contains("/reader_cache/") == true
+    return parsed.scheme?.lowercase() == "javascript" && url.contains(LIVE_DARK_STYLE_ID)
+}
+
+private fun applyLiveDarkOverlay(session: GeckoSession, enabled: Boolean) {
+    session.loadUri(liveDarkOverlayJavascriptUri(enabled))
+}
+
+private fun liveDarkOverlayJavascriptUri(enabled: Boolean): String {
+    val script = if (enabled) {
+        """
+            (function(){
+              var id='$LIVE_DARK_STYLE_ID';
+              var old=document.getElementById(id);
+              var parent=document.head||document.documentElement;
+              if(!parent){return;}
+              var style=old||document.createElement('style');
+              style.id=id;
+              style.textContent=${JSONObject.quote(LIVE_DARK_OVERLAY_CSS)};
+              if(!old){parent.appendChild(style);}
+            })();
+        """.trimIndent()
+    } else {
+        """
+            (function(){
+              var old=document.getElementById('$LIVE_DARK_STYLE_ID');
+              if(old){old.remove();}
+            })();
+        """.trimIndent()
+    }
+    return "javascript:${Uri.encode(script)}"
 }
 
 private fun NewsSource.domainLabel(): String {
@@ -2970,3 +3021,49 @@ private val HomeCategories = listOf(
 )
 
 private val SourceFilterCategories = listOf("All") + HomeCategories + listOf("Agency")
+
+private const val LIVE_DARK_STYLE_ID = "khobor-live-dark-style"
+
+private val LIVE_DARK_OVERLAY_CSS = """
+    html, body {
+      background: #080808 !important;
+      color: #F5F2EC !important;
+      color-scheme: dark !important;
+    }
+    body, main, article, section, header, footer, nav, aside,
+    div, p, span, li, ul, ol, table, tbody, thead, tfoot, tr, td, th,
+    form, label, figure, figcaption, blockquote {
+      border-color: #2A2A2A !important;
+      color: inherit !important;
+    }
+    main, article, section, header, footer, nav, aside,
+    div, table, tbody, thead, tfoot, tr, td, th, form {
+      background-color: transparent !important;
+    }
+    h1, h2, h3, h4, h5, h6, p, span, li, blockquote, figcaption,
+    strong, b, em, small, label, time {
+      color: #F5F2EC !important;
+    }
+    a, a span {
+      color: #F5F2EC !important;
+    }
+    input, textarea, select, button {
+      background: #151515 !important;
+      color: #F5F2EC !important;
+      border-color: #333333 !important;
+    }
+    *[style*="background:#fff"],
+    *[style*="background: #fff"],
+    *[style*="background-color:#fff"],
+    *[style*="background-color: #fff"],
+    *[style*="background:white"],
+    *[style*="background: white"],
+    *[style*="background-color:white"],
+    *[style*="background-color: white"] {
+      background-color: #151515 !important;
+    }
+    img, picture, video, svg, canvas, iframe {
+      filter: none !important;
+      opacity: 1 !important;
+    }
+""".trimIndent()
